@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://raw.githubusercontent.com/raliclo/zsh/develop/build/release/zsh.zip",
-            "hash": "0c354e5407f8eacecd64e492fed7568b336db25ee4e66af03a6d74bbc5956302"
+            "hash": "25ae5c1eb10841678be0e727225db77cb787e1364455fca19d771b0c741a467b"
         }
     },
     "bin": [
