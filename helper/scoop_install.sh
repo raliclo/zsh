@@ -73,8 +73,8 @@ if [ ! -x "$BUILD/bin/zsh.exe" ]; then
     echo "error: $BUILD/bin/zsh.exe not found; run helper/compile.sh first" >&2
     exit 1
 fi
-if [ ! -f "$BUILD/bin/zsh.cmd" ] || [ ! -f "$BUILD/bin/zsh/zle.dll" ]; then
-    echo "error: build/bin is missing zsh.cmd or zsh/zle.dll; rerun helper/compile.sh" >&2
+if [ ! -f "$BUILD/bin/zsh.cmd" ] || { [ ! -f "$BUILD/bin/zsh/zle.so" ] && [ ! -f "$BUILD/bin/zsh/zle.dll" ]; }; then
+    echo "error: build/bin is missing zsh.cmd or zsh/zle module; rerun helper/compile.sh" >&2
     exit 1
 fi
 command -v scoop >/dev/null 2>&1 || {

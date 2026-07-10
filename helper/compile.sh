@@ -93,31 +93,68 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
         # config.guess reports mingw32, not cygwin, so configure picks bare
         # ld for module linking; modern binutils then exports no symbols and
         # configure silently disables dynamic modules. Preset the link
-        # command the cygwin branch would use.
+        # command the cygwin branch would use. (Do not add a libzsh
+        # reference here: configure's own dlopen self-test links a throwaway
+        # conftest with these exact flags, and a glob with no match at that
+        # point makes the test fail, silently disabling dynamic modules
+        # entirely instead of just this one module.)
         DLLD=gcc DLLDFLAGS='-shared -Wl,--export-all-symbols' \
             '$SRC_MSYS/configure' --prefix=/usr/local
     fi
 
-    echo '==> Running make...'
+    echo '==> Running make (first pass, modules expected to fail here)...'
+    # The per-directory module Makefiles (Src/Builtins, Src/Modules, Src/Zle)
+    # do not exist until make generates them on this first pass, so the
+    # libzsh-linking patch below cannot be applied any earlier. Unlike
+    # genuine Cygwin's ld, MSYS2's cygwin-target ld does not tolerate
+    # unresolved symbols in a -shared build, so this first pass is expected
+    # to fail once it reaches module linking (e.g. rlimits.so).
+    make -j\$(nproc) || true
+
+    # Each module's link recipe references its NOLINKMODS_<mod> variable
+    # -- always blank -- instead of LINKMODS_<mod>, which mkmakemod.sh
+    # always fills in with the module's real dependencies (libzsh, plus any
+    # other module it declares via moddeps=, e.g. zsh/ksh93 needs
+    # zsh/zle for varedarg/curkeymapname). configure.ac only picks
+    # LINKMODS when host_os = cygwin; config.guess reports mingw32 here,
+    # so it falls through to the NOLINKMODS default meant for platforms
+    # whose dynamic loader resolves inter-module symbols lazily at
+    # dlopen time. MSYS2's cygwin-target ld does not, so those symbols
+    # are unresolved at link time instead, breaking the build. Point the
+    # recipes at LINKMODS_ instead so dependencies actually get linked.
+    for mod_makefile in Src/Builtins/Makefile Src/Modules/Makefile Src/Zle/Makefile; do
+        if [ -f \"\$mod_makefile\" ] && grep -q '\$(NOLINKMODS_' \"\$mod_makefile\"; then
+            sed -i 's/\$(NOLINKMODS_/\$(LINKMODS_/g' \"\$mod_makefile\"
+        fi
+    done
+
+    echo '==> Running make (second pass, with libzsh linking patched in)...'
     make -j\$(nproc)
 
     # --- Assemble a portable runtime in build/bin ---------------------------
     # zsh.exe + libzsh + loadable modules + the MSYS2 runtime DLLs they need,
     # so the result runs from any shell (Git Bash, cmd, ...) without MSYS2
     # on PATH. Modules go in bin/zsh/ because module 'zsh/foo' is looked up
-    # as <module_path>/zsh/foo.dll.
+    # as <module_path>/zsh/foo.\$DL_EXT. Read DL_EXT from the Makefile that
+    # was actually just built with, rather than hardcoding .so or .dll:
+    # whether configure's host_os check lands on the cygwin branch
+    # (DL_EXT=dll) or falls through to the generic-ELF branch (DL_EXT=so)
+    # depends on how config.guess reads the MSYS2 toolchain, which has
+    # flipped between runs on the same machine (an MSYS2 update changes
+    # what 'uname' reports).
     echo '==> Assembling portable runtime in build/bin...'
     cd '$BUILD_MSYS'
+    DL_EXT=\$(sed -n 's/^DL_EXT[[:space:]]*=[[:space:]]*//p' Src/Makefile | head -1)
     rm -rf bin
     mkdir -p bin
-    cp Src/zsh.exe Src/libzsh-*.dll bin/
+    cp Src/zsh.exe Src/libzsh-*.\$DL_EXT bin/
 
     sed -n 's/^name=\([^ ]*\).* modfile=\([^ ]*\).* link=dynamic .*/\1 \2/p' config.modules \\
         | while read -r modname modfile; do
-            src=\"\${modfile%.mdd}.dll\"
+            src=\"\${modfile%.mdd}.\$DL_EXT\"
             dll=\"\${modfile##*/}\"
-            dll=\"\${dll%.mdd}.dll\"
-            dest=\"bin/\$modname.dll\"
+            dll=\"\${dll%.mdd}.\$DL_EXT\"
+            dest=\"bin/\$modname.\$DL_EXT\"
             if [ -f \"\$src\" ]; then
                 mkdir -p \"\$(dirname \"\$dest\")\"
                 cp \"\$src\" \"\$dest\"
@@ -126,7 +163,7 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
             fi
         done
 
-    { ldd Src/zsh.exe; find Src -name '*.dll' -exec ldd {} +; } 2>/dev/null \\
+    { ldd Src/zsh.exe; find Src -name \"*.\$DL_EXT\" -exec ldd {} +; } 2>/dev/null \\
         | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' | sort -u \\
         | while read -r dll; do cp \"\$dll\" bin/; done
 
@@ -137,6 +174,22 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
         mkdir -p bin/share
         cp -R /usr/share/terminfo bin/share/
     fi
+
+    # Bundle real GNU findutils binaries the portable runtime needs but
+    # doesn't build itself: find (Windows ships its own incompatible
+    # C:\\Windows\\System32\\find.exe that would otherwise shadow it --
+    # zsh.cmd's PATH reordering only helps once a real one is here to
+    # find) and xargs (Windows ships none at all, so it would simply be
+    # missing on a machine without MSYS2/Git on PATH).
+    for tool in find xargs; do
+        if command -v \$tool.exe >/dev/null 2>&1; then
+            tool_exe=\"\$(command -v \$tool.exe)\"
+            cp \"\$tool_exe\" bin/
+            ldd \"\$tool_exe\" 2>/dev/null \\
+                | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' \\
+                | while read -r dll; do cp \"\$dll\" bin/; done
+        fi
+    done
 "
 
 # --- Portable launcher + zsh bootstrap --------------------------------------
@@ -145,19 +198,41 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
 # that outer double-quoted string early and mangle everything after it.
 cat > "$BUILD/bin/zsh.cmd" <<'EOF_CMD'
 @echo off
+setlocal EnableDelayedExpansion
 set "ZSH_PORTABLE_DIR=%~dp0"
 set "ZSH_WIN_HOME=%USERPROFILE%"
 set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"
 set "TERMINFO=/cygdrive/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
+
+rem Prepend the portable dir, then push the Windows system directories to
+rem the very end of PATH. Those ship their own find/sort/more/where/... with
+rem non-POSIX behavior; left in their normal (early) position they shadow
+rem the real tools zsh expects -- e.g. Windows' find.exe instead of the GNU
+rem find bundled next to zsh.exe -- no matter what else is on PATH.
 set "PATH=%ZSH_PORTABLE_DIR%;%PATH%"
+set "_ZSH_SYS32=%SystemRoot%\System32"
+set "_ZSH_SYSWOW=%SystemRoot%\SysWOW64"
+set "_ZSH_WINDIR=%SystemRoot%"
+set "PATH=!PATH:%_ZSH_SYS32%;=!"
+set "PATH=!PATH:%_ZSH_SYSWOW%;=!"
+set "PATH=!PATH:%_ZSH_WINDIR%;=!"
+set "PATH=!PATH!;%_ZSH_SYS32%;%_ZSH_SYSWOW%;%_ZSH_WINDIR%"
+set "_ZSH_SYS32="
+set "_ZSH_SYSWOW="
+set "_ZSH_WINDIR="
+
 if defined ZDOTDIR (
     set "ZSH_ORIG_ZDOTDIR=%ZDOTDIR%"
 ) else (
     set "ZSH_ORIG_ZDOTDIR=%USERPROFILE%"
 )
 set "ZDOTDIR=%ZSH_PORTABLE_DIR%"
+
+rem %* is passed through to zsh.exe as-is below; disable delayed expansion
+rem first so a literal "!" in a forwarded argument survives untouched.
+setlocal DisableDelayedExpansion
 "%ZSH_PORTABLE_DIR%zsh.exe" %*
 EOF_CMD
 
@@ -203,7 +278,7 @@ EOF_ZSHENV
 
 # --- Stamp the build: zsh version + source commit ---------------------------
 {
-    "$BUILD/bin/zsh.exe" --version
+    "$BUILD/bin/zsh.cmd" --version
     git -C "$SRC" log -1 --format='%H'
 } > "$BUILD/bin/version.txt"
 echo "==> version.txt:"
@@ -216,5 +291,5 @@ rm -f "$SRC/configure" "$SRC/config.h.in" "$SRC/stamp-h.in" "$SRC/META-FAQ"
 
 echo "==> Build complete. Output kept in: $BUILD"
 echo "==> Portable runtime: $BUILD/bin (zsh.cmd, zsh.exe, required DLLs, modules)"
-"$BUILD/bin/zsh.exe" --version
+"$BUILD/bin/zsh.cmd" --version
 echo "==> For dynamic modules (zle etc.) outside MSYS2, run $BUILD/bin/zsh.cmd"
