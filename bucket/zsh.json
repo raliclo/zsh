@@ -6,14 +6,14 @@
     "architecture": {
         "64bit": {
             "url": "https://raw.githubusercontent.com/raliclo/zsh/develop/build/release/zsh.zip",
-            "hash": "25ae5c1eb10841678be0e727225db77cb787e1364455fca19d771b0c741a467b"
+            "hash": "3008c621b6d9f534aa9e7c412cc25caa3710f75fd8d544c99f082ba074a41fe2"
         }
     },
     "bin": [
         [
-            "zsh.cmd",
+            "zsh-loader.exe",
             "zsh"
         ]
     ],
-    "notes": "zsh built from source with MSYS2; zip served from the develop branch of https://github.com/raliclo/zsh."
+    "notes": "zsh built from source with MSYS2; zip served from the develop branch of https://github.com/raliclo/zsh. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
 }

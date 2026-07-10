@@ -16,6 +16,7 @@ zsh is a POSIX shell and cannot be built with MSVC alone; it needs the MSYS2
 sh helper/install_build_tool.sh   # one-time: installs MSYS2 + gcc/make/autoconf/automake/ncurses-devel
 sh helper/compile.sh              # builds zsh into ./build
 sh helper/scoop_install.sh        # optional: install the result as a scoop app with a `zsh` shim
+zsh helper/test/test_windows_packaging.zsh <path-to-build/bin>  # optional: regression tests
 ```
 
 ### install_build_tool.sh
@@ -36,21 +37,32 @@ Cygwin-like environment.
 
 Builds zsh out-of-tree so the source directory stays clean:
 
-1. Runs `Util/preconfig` (autoconf) in the source tree if `configure` doesn't
+1. Verifies `Src/Zle/zle.h` and `Src/Zle/zle_move.c` still match the sha256
+   checksums in `helper/patches/checksum.txt`, then applies
+   `helper/patches/windows-zle-surrogate-pairs.patch` to the source tree.
+   Refuses to build if the checksums don't match (see "The ZLE surrogate-pair
+   patch" below).
+2. Runs `Util/preconfig` (autoconf) in the source tree if `configure` doesn't
    exist yet.
-2. Runs `configure` and `make -j$(nproc)` **inside `build/`** (VPATH build),
-   not in the source tree.
-3. Assembles a **portable runtime in `build/bin`**: `zsh.exe`, `zsh.cmd`,
-   `libzsh-*.dll`, all dynamic modules from `config.modules`, a bootstrap
-   `.zshenv` for the wrapper, MSYS2 runtime DLLs discovered via `ldd`,
-   `tput.exe`, and the MSYS2 terminfo database.
-4. Removes autotools-generated files from the source tree afterward
+3. Runs `configure` and `make -j$(nproc)` **inside `build/`** (VPATH build),
+   not in the source tree. `configure` is run with `DLLD`/`DLLDFLAGS` preset
+   and the module Makefiles are patched to reference `LINKMODS_` instead of
+   `NOLINKMODS_`, working around `config.guess` misdetecting `host_os` as
+   `mingw32` instead of `cygwin` on this toolchain (this detection has been
+   observed to flip between `mingw32` and `cygwin` across MSYS2 updates on
+   the same machine, hence `compile.sh` reads the actual `DL_EXT` the build
+   produced — `.so` or `.dll` — from the generated Makefile rather than
+   assuming either).
+4. Assembles a **portable runtime in `build/bin`**: `zsh.exe` (the real
+   interpreter), a native launcher compiled as `zsh-loader.exe`, `zsh.cmd`,
+   `libzsh-*.so`/`.dll`, all dynamic modules from `config.modules`, a
+   bootstrap `.zshenv`, MSYS2 runtime DLLs discovered via `ldd`, `tput.exe`,
+   bundled GNU `find`/`xargs`, and the MSYS2 terminfo database.
+5. Reverts the ZLE patch applied in step 1, so the source tree is clean
+   again for merging upstream zsh changes.
+6. Removes autotools-generated files from the source tree
    (`configure`, `config.h.in`, `autom4te.cache`, `stamp-h.in`, `META-FAQ`).
-5. Leaves `build/` in place — it is **not** cleaned up.
-
-**Build output**: `build/bin/zsh.cmd` is the supported portable entry point.
-It launches `build/bin/zsh.exe` after setting up the runtime environment.
-Intermediate build artifacts remain under `build/`.
+7. Leaves `build/` in place — it is **not** cleaned up.
 
 **CRLF guard**: if the source tree's line endings have been converted to
 CRLF (e.g. by `core.autocrlf=true`), the autotools build breaks. In that
@@ -60,36 +72,61 @@ untouched. Fix `core.autocrlf` and restore LF endings to avoid this path.
 
 ## Running the built binary
 
+`build/bin` has three entry points:
+
+| File | What it is | When to use it |
+|---|---|---|
+| `zsh-loader.exe` | Native launcher (compiled from `helper/zsh_launcher.c`) that sets up the environment, then forwards to `zsh.exe` with argv untouched | **Default choice**, especially for programmatic callers (spawning zsh as a subprocess from another program) |
+| `zsh.cmd` | Batch-file launcher doing the same environment setup | Interactive use from `cmd.exe` / double-click; equivalent to `zsh-loader.exe` for normal typed commands |
+| `zsh.exe` | The real interpreter, built by `configure`/`make` | Not meant to be run directly — needs `ZDOTDIR`/`ZSH_PORTABLE_DIR`/`TERMINFO` set by hand first (see `.zshenv`) |
+
+**Use `zsh-loader.exe`, not `zsh.cmd`, if you're spawning zsh from another program**
+(Swift's `Process`, Python's `subprocess`, etc.) or passing it a multi-line
+`-c` script. `.cmd` files can only run through `cmd.exe`'s own command-line
+parser (`CreateProcess` has no "run this script with these argv" concept for
+a `.cmd` target); that parser re-tokenizes the incoming command line using
+its own rules — it truncates a multi-line `-c` argument at the first
+embedded newline, and can leak `|` and other metacharacters out of what
+looks like a quoted string. Neither is fixable from inside `zsh.cmd`, since
+the corruption happens before any of its lines run. `zsh-loader.exe` is a real PE
+executable, so Windows hands it the process's actual command line
+unmodified and the standard argv-parsing convention round-trips embedded
+newlines and metacharacters inside quoted arguments correctly.
+
 `build/bin` is self-contained — the required MSYS2 DLLs sit next to
 `zsh.exe`, so it runs from Git Bash, cmd, or PowerShell without MSYS2 on
 `PATH`:
 
 ```sh
-build/bin/zsh.cmd --version
+build/bin/zsh-loader.exe --version
 ```
 
 Dynamic modules (`zsh/zle`, `zsh/complete`, ...) are compiled to look in
-`/usr/local/lib/zsh/<version>`, which won't exist outside MSYS2. Use the
-portable `zsh.cmd` wrapper so the packaged `.zshenv` can prepend `build/bin`
-to `module_path`, then restore your real `ZDOTDIR`:
+`/usr/local/lib/zsh/<version>`, which won't exist outside MSYS2. Both
+launchers set `ZDOTDIR`/`ZSH_PORTABLE_DIR` so the packaged `.zshenv` can
+prepend `build/bin` to `module_path`, then restore your real `ZDOTDIR`.
 
-```sh
-build/bin/zsh.cmd
-```
-
-Do **not** run the bare `build/Src/zsh.exe` from Git Bash — it will fail
-with error 0xc0000135 because Git Bash doesn't ship the MSYS2 runtime DLLs
-(its own `msys-2.0.dll` is a different, incompatible build and it has no
+Do **not** run the bare `build/Src/zsh.exe` (the raw build output, before
+assembly into `build/bin`) from Git Bash — it will fail with error
+0xc0000135 because Git Bash doesn't ship the MSYS2 runtime DLLs (its own
+`msys-2.0.dll` is a different, incompatible build and it has no
 `msys-ncursesw6.dll`).
 
-The wrapper/bootstrap also:
+The launcher/bootstrap also:
 
+- switches the console to UTF-8 (code page 65001) on entry and restores the
+  original code page on exit, so UTF-8 output (and typed multibyte input)
+  round-trips correctly instead of showing as mojibake on a console left on
+  a legacy code page;
 - sets `HOME` from Windows `%USERPROFILE%`, so `~/` resolves to your Windows
   profile instead of a missing `/home/<user>` directory;
 - sets `TERMINFO` before zsh starts and packages `share/terminfo`, so `tput`
   and terminals such as `xterm-256color` work;
-- prepends `build/bin` to `PATH`, so packaged helper tools such as `tput.exe`
-  are found;
+- prepends `build/bin` to `PATH`, then pushes `%SystemRoot%\System32`,
+  `SysWOW64`, and `%SystemRoot%` itself to the very end of `PATH` — those
+  ship their own `find`/`sort`/`more`/`where`/... with non-POSIX behavior
+  and would otherwise shadow the bundled GNU tools (or anything else
+  earlier on the caller's own `PATH`) no matter where they'd naturally fall;
 - sets the default interactive prompt to `username@current-path`;
 - binds both common Backspace sequences (`^?` and `^H`) in `main`, `emacs`,
   and `viins` keymaps. If Backspace still behaves exactly like Tab, the
@@ -99,6 +136,28 @@ The wrapper/bootstrap also:
 Note: `make install` into the MSYS2 prefix currently fails at
 `install.modules` (a `rlimits` module link error against static libc on
 MSYS); use the portable `build/bin` layout instead.
+
+## The ZLE surrogate-pair patch
+
+Windows/Cygwin's `wchar_t` is 16 bits. A character outside the Basic
+Multilingual Plane — most emoji — needs a UTF-16 surrogate pair to
+represent, i.e. two consecutive `ZLE_CHAR_T` units in the line editor's
+buffer instead of one. Unpatched, ZLE's cursor movement and character
+deletion (`inccs`/`deccs`/`incpos`/`decpos` in `Src/Zle/zle_move.c`, used by
+`forward-char`/`backward-char` and `backdel`/`foredel`) treat the two halves
+as separate characters, landing the cursor in the middle of a pair or
+deleting only half an emoji.
+
+This is fixed by `helper/patches/windows-zle-surrogate-pairs.patch`,
+applied to the source tree by `compile.sh` before building and reverted
+afterward — not a permanent source change, so the tree stays mergeable with
+upstream zsh. Before applying it, `compile.sh` checks
+`Src/Zle/zle.h`/`Src/Zle/zle_move.c` against the sha256 checksums recorded
+in `helper/patches/checksum.txt` and refuses to build if they don't match,
+since the patch's context lines (and its correctness) only make sense
+against the exact pristine source it was written against — a future
+upstream sync to either file needs the patch (and `checksum.txt`) reviewed
+and regenerated, not silently fuzzy-applied.
 
 ## Installing as a scoop app (scoop_install.sh)
 
@@ -110,13 +169,17 @@ scoop, using the manifest in `bucket/zsh.json`:
 2. Regenerates `bucket/zsh.json` with the version, a `file:///` URL to the
    zip, and its sha256 hash.
 3. Runs `scoop install bucket/zsh.json` (uninstalling any previous zsh
-   first), which:
+   first — **close any running zsh processes before this step**, since
+   scoop can't remove files a running process still has open, and the
+   reinstall silently no-ops if uninstall fails since the version string
+   doesn't change between rebuilds), which:
    - extracts the zip to `~/scoop/apps/zsh/<version>\` and links
      `~/scoop/apps/zsh/current` to it — this is scoop's canonical location,
      derived from the manifest filename and `version` field;
-   - creates `~/scoop/shims/zsh` and `~/scoop/shims/zsh.cmd` from the
-     manifest's `zsh.cmd` entry, so `zsh` works from any shell with scoop's
-     shims on `PATH`;
+   - creates the `~/scoop/shims/zsh` shim from the manifest's `zsh-loader.exe`
+     entry (the native launcher, not `zsh.cmd` — see "Running the built
+     binary" above for why), so `zsh` works from any shell with scoop's
+     shims on `PATH`, with argv preserved exactly;
    - uses the wrapper and packaged `.zshenv` to set `module_path`, `HOME`,
      `TERMINFO`, prompt defaults, and Backspace bindings without relying on
      the ignored `MODULE_PATH` environment variable.
@@ -127,6 +190,64 @@ the local `file:///` zip is regenerated on each package run.
 To rebuild and reinstall after source changes:
 `sh helper/compile.sh && sh helper/scoop_install.sh`.
 To remove: `scoop uninstall zsh`.
+
+## Regression tests (helper/test/test_windows_packaging.zsh)
+
+Covers the packaging-specific fixes above: the multi-line `-c` /
+metacharacter-in-quotes bugs, bundled `find`/`xargs` taking priority over
+Windows' own, dynamic module loading, `PATH` ordering, and (best-effort —
+see the comment in the script) the ZLE surrogate-pair cursor/delete fix.
+Must be run with the build's own interpreter, since it needs `zsh/zpty` and
+is testing that build specifically, and the `build/bin` path must be passed
+explicitly rather than auto-detected — see "Known limitations" below for why:
+
+```sh
+build/bin/zsh.exe -f helper/test/test_windows_packaging.zsh "$(pwd)/build/bin"
+```
+
+## Known limitations
+
+- **`/` resolves to the calling process's working directory, not a fixed
+  filesystem root**, when `zsh.exe` (or anything that forwards to it) is
+  run standalone without the rest of a normal MSYS2 install tree — this
+  packaging only copies a handful of files flatly into `build/bin/`, not
+  the usual `usr/bin/...` nesting a real MSYS2 install has `msys-2.0.dll`
+  under. Repro: `cd C:\anywhere && build\bin\zsh.exe -f -c 'ls -ld /'`
+  prints `C:/anywhere/` instead of a real root. `$PWD` is consequently wrong
+  at startup (shows `/` instead of the real cwd until something explicitly
+  `cd`s), and every other absolute path (`/tmp`, `/etc`, ...) resolves
+  relative to whatever directory the caller happened to launch zsh from —
+  most visibly, `echo x > /tmp/a` or a heredoc (which needs to create a temp
+  file under `/tmp`) fails with "no such file or directory" unless cwd
+  happens to contain a matching subdirectory. A full MSYS2 install's own
+  `bash` does **not** have this problem when spawned the same way, so it's
+  specific to running `msys-2.0.dll` outside its normal directory layout,
+  not an inherent Cygwin/MSYS2-on-Windows limitation. Not yet fixed: needs
+  figuring out what a from-scratch `msys-2.0.dll` actually needs on disk
+  (or in the registry) to compute a real root without a full MSYS2 install
+  tree present. A minimal `/etc/fstab` (either next to `msys-2.0.dll` or one
+  directory up) was tried and did not fix it, and made other defaults worse
+  (a bare `none / cygdrive ...` fstab entry appears to replace rather than
+  supplement the DLL's built-in default mounts — `/tmp` stopped resolving
+  at all).
+- **`\UXXXXXXXX` string escapes above U+FFFF decode to the wrong
+  character.** `ucs4tomb()` in `Src/utils.c` calls
+  `wctomb(buf, (wchar_t)wval)`, truncating the full codepoint to 16 bits
+  before conversion (e.g. `$'\U1F389'` — 🎉 — becomes U+F389, an unrelated
+  Private Use Area character) on any platform where `wchar_t` is 16 bits.
+  A working direct-to-UTF-8 path already exists (`ucs4toutf8()`, same file)
+  but is compiled out here because it's gated on `!defined(__STDC_ISO_10646__)`,
+  which this toolchain defines despite `wchar_t` not actually being wide
+  enough. Not patched here: `ucs4tomb()` is a widely-shared utility
+  function, and changing its behavior needs wider testing than this
+  packaging effort covers. Workaround: use raw byte escapes
+  (`$'\xf0\x9f\x8e\x89'`) instead of `\U`/`\u` for non-BMP characters.
+- Windows ships no `xargs.exe` at all, and its `find.exe` is a different,
+  incompatible tool from GNU findutils' — both are bundled to cover this
+  (see "compile.sh" above), but any *other* GNU coreutils command a script
+  assumes (e.g. `sed`, `awk`, `grep`) is similarly not guaranteed to exist
+  on a machine without MSYS2/Git for Windows on `PATH` unless it's bundled
+  the same way.
 
 ## Known non-fatal warnings
 
