@@ -4,7 +4,14 @@
 # Prerequisite: sh helper/install_build_tool.sh
 #
 # Usage (from Git Bash or any POSIX shell):
-#   sh helper/compile.sh [source-dir]
+#   sh helper/compile.sh [-f] [source-dir]
+#
+# -f forces the build past a Windows ZLE patch checksum mismatch (see
+# below) instead of refusing to build. Only pass this once you've
+# reviewed why Src/Zle/zle.h/zle_move.c changed and either regenerated
+# helper/patches/checksum.txt (helper/regen_checksum.sh) or
+# confirmed the drift is fine to build over as-is; -f does not update
+# checksum.txt itself, it just skips the check for this one run.
 #
 # This is an out-of-tree (VPATH) build: all build output lands in <repo>/build
 # and is kept after the build. The resulting binary is build/Src/zsh.exe.
@@ -17,6 +24,12 @@
 # clean detached git worktree at ../zsh-build instead of the damaged tree.
 
 set -e
+
+FORCE=
+if [ "$1" = "-f" ]; then
+    FORCE=1
+    shift
+fi
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SRC="${1:-$REPO}"
@@ -65,6 +78,50 @@ BUILD_MSYS=$(to_msys_path "$BUILD")
 echo "==> Source tree:  $SRC"
 echo "==> Build output: $BUILD"
 mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
+
+# --- Apply the Windows-specific ZLE fix (reverted after the build below) ----
+# Windows/Cygwin's 16-bit wchar_t stores a character outside the Basic
+# Multilingual Plane (most emoji) as a UTF-16 surrogate pair -- two
+# consecutive ZLE_CHAR_T units -- instead of one. Without this patch, ZLE
+# cursor movement and character deletion treat the two halves as separate
+# characters, landing the cursor in the middle of the pair. Applied as a
+# build-time patch rather than a permanent source change so the tree stays
+# clean for merging upstream zsh changes.
+#
+# The patch's context lines only make sense against the exact pristine
+# source it was written against; if a future upstream sync changes these
+# files, 'git apply' could still succeed via fuzzy matching and silently
+# produce something subtly wrong. Guard against that by checksumming the
+# pristine files first (helper/patches/checksum.txt) and refusing to
+# build at all if they've drifted, rather than build with a patch that
+# may not mean what it says.
+ZLE_PATCH="$REPO/helper/patches/windows-zle-surrogate-pairs.patch"
+ZLE_CHECKSUMS="$REPO/helper/patches/checksum.txt"
+if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
+    # Comments stripped before checking: not all sha256sum implementations
+    # skip '#' lines in --check mode (GNU coreutils does; some don't and
+    # report each as a bogus FAILED entry).
+    if ! ( cd "$SRC" && grep -v '^#' "$ZLE_CHECKSUMS" | sha256sum -c - ) >/dev/null 2>&1; then
+        if [ -n "$FORCE" ]; then
+            echo "warning: Src/Zle/zle.h and/or Src/Zle/zle_move.c no longer match" >&2
+            echo "         helper/patches/checksum.txt; building anyway (-f). The ZLE" >&2
+            echo "         patch below may not apply cleanly, or may apply but no" >&2
+            echo "         longer mean what its comments say. Run" >&2
+            echo "         helper/regen_checksum.sh once you've confirmed the" >&2
+            echo "         patch is still correct." >&2
+        else
+            echo "error: Src/Zle/zle.h and/or Src/Zle/zle_move.c no longer match the" >&2
+            echo "       versions helper/patches/windows-zle-surrogate-pairs.patch was" >&2
+            echo "       written against (see helper/patches/checksum.txt). Refusing to" >&2
+            echo "       build until the patch is reviewed and checksum.txt updated" >&2
+            echo "       (helper/regen_checksum.sh), or rerun with -f to build" >&2
+            echo "       past this check once." >&2
+            exit 1
+        fi
+    fi
+    echo "==> Applying Windows ZLE surrogate-pair patch..."
+    git -C "$SRC" apply "$ZLE_PATCH"
+fi
 
 # --- preconfig, configure (in build/), make ---------------------------------
 "$MSYS2_BASH" -lc "
@@ -132,10 +189,14 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
     make -j\$(nproc)
 
     # --- Assemble a portable runtime in build/bin ---------------------------
-    # zsh.exe + libzsh + loadable modules + the MSYS2 runtime DLLs they need,
-    # so the result runs from any shell (Git Bash, cmd, ...) without MSYS2
-    # on PATH. Modules go in bin/zsh/ because module 'zsh/foo' is looked up
-    # as <module_path>/zsh/foo.\$DL_EXT. Read DL_EXT from the Makefile that
+    # zsh.exe (the real interpreter) + libzsh + loadable modules + the
+    # MSYS2 runtime DLLs they need, so the result runs from any shell
+    # (Git Bash, cmd, ...) without MSYS2 on PATH. It's installed as
+    # native launcher compiled below is named zsh-loader.exe; it does env
+    # setup and then forwards to the real zsh.exe -- see that step for why.
+    # Modules go in
+    # bin/zsh/ because module 'zsh/foo' is looked up as
+    # <module_path>/zsh/foo.\$DL_EXT. Read DL_EXT from the Makefile that
     # was actually just built with, rather than hardcoding .so or .dll:
     # whether configure's host_os check lands on the cygwin branch
     # (DL_EXT=dll) or falls through to the generic-ELF branch (DL_EXT=so)
@@ -147,7 +208,8 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
     DL_EXT=\$(sed -n 's/^DL_EXT[[:space:]]*=[[:space:]]*//p' Src/Makefile | head -1)
     rm -rf bin
     mkdir -p bin
-    cp Src/zsh.exe Src/libzsh-*.\$DL_EXT bin/
+    cp Src/zsh.exe bin/zsh.exe
+    cp Src/libzsh-*.\$DL_EXT bin/
 
     sed -n 's/^name=\([^ ]*\).* modfile=\([^ ]*\).* link=dynamic .*/\1 \2/p' config.modules \\
         | while read -r modname modfile; do
@@ -190,6 +252,17 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
                 | while read -r dll; do cp \"\$dll\" bin/; done
         fi
     done
+
+    # zsh.cmd can only be run via cmd.exe's own batch-file parser, which
+    # re-tokenizes the incoming command line before this script ever runs:
+    # it truncates a multi-line -c argument at the first embedded newline,
+    # and can leak '|' and other metacharacters out of what looks like a
+    # quoted string. Neither is fixable from inside zsh.cmd -- the
+    # corruption happens before any of its lines execute. This launcher is
+    # a real PE binary, so argv reaches zsh.exe unmodified; package it as
+    # zsh-loader.exe and let the Scoop shim named zsh point at it.
+    echo '==> Compiling native launcher (bin/zsh-loader.exe -> zsh.exe)...'
+    gcc -O2 -o bin/zsh-loader.exe '$SRC_MSYS/helper/zsh_launcher.c'
 "
 
 # --- Portable launcher + zsh bootstrap --------------------------------------
@@ -205,6 +278,16 @@ set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"
 set "TERMINFO=/cygdrive/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
+
+rem Switch the console to UTF-8 (65001) so zsh's UTF-8 output and typed
+rem multibyte input round-trip correctly; without this, a console left on
+rem a legacy code page (still common unless "Beta: Use Unicode UTF-8" is
+rem enabled system-wide) shows mojibake instead of e.g. CJK text or emoji.
+rem Save the current code page first and restore it on exit below, so it
+rem doesn't leak into the parent cmd/PowerShell session once zsh quits.
+for /f "tokens=2 delims=:" %%P in ('chcp') do set "_ZSH_ORIG_CP=%%P"
+set "_ZSH_ORIG_CP=%_ZSH_ORIG_CP: =%"
+chcp 65001 >nul
 
 rem Prepend the portable dir, then push the Windows system directories to
 rem the very end of PATH. Those ship their own find/sort/more/where/... with
@@ -232,9 +315,18 @@ set "ZDOTDIR=%ZSH_PORTABLE_DIR%"
 
 rem %* is passed through to zsh.exe as-is below; disable delayed expansion
 rem first so a literal "!" in a forwarded argument survives untouched.
+rem (zsh.exe, not zsh-loader.exe: this script already does the same env setup
+rem the native launcher does, so it calls the real interpreter directly.)
 setlocal DisableDelayedExpansion
 "%ZSH_PORTABLE_DIR%zsh.exe" %*
+set "_ZSH_EXIT=%ERRORLEVEL%"
+if defined _ZSH_ORIG_CP chcp %_ZSH_ORIG_CP% >nul
+exit /b %_ZSH_EXIT%
 EOF_CMD
+
+# for /f (used above to read back the current code page) requires CRLF line
+# endings to parse correctly in cmd.exe; the heredoc above wrote plain LF.
+sed -i 's/$/\r/' "$BUILD/bin/zsh.cmd"
 
 cat > "$BUILD/bin/.zshenv" <<'EOF_ZSHENV'
 zsh_portable_dir=${ZSH_PORTABLE_DIR:-}
@@ -288,8 +380,15 @@ cat "$BUILD/bin/version.txt"
 echo "==> Cleaning generated files from source tree..."
 rm -rf "$SRC/autom4te.cache"
 rm -f "$SRC/configure" "$SRC/config.h.in" "$SRC/stamp-h.in" "$SRC/META-FAQ"
+if [ -f "$ZLE_PATCH" ] && grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
+    echo "==> Reverting Windows ZLE surrogate-pair patch..."
+    git -C "$SRC" apply -R "$ZLE_PATCH"
+fi
 
 echo "==> Build complete. Output kept in: $BUILD"
-echo "==> Portable runtime: $BUILD/bin (zsh.cmd, zsh.exe, required DLLs, modules)"
+echo "==> Portable runtime: $BUILD/bin"
+echo "==>   zsh.cmd        - interactive launcher for cmd.exe / double-click"
+echo "==>   zsh-loader.exe - native launcher for programmatic callers (preserves argv exactly)"
+echo "==>   zsh.exe        - the real interpreter zsh.cmd/zsh-loader.exe both forward to"
 "$BUILD/bin/zsh.cmd" --version
-echo "==> For dynamic modules (zle etc.) outside MSYS2, run $BUILD/bin/zsh.cmd"
+echo "==> For dynamic modules (zle etc.) outside MSYS2, run $BUILD/bin/zsh.cmd or zsh-loader.exe"
