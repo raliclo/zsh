@@ -1,0 +1,6 @@
+# sha256 checksums of the pristine (unpatched) files that
+# windows-zle-surrogate-pairs.patch was written against.
+# Verified with: sha256sum -c helper/patches/checksum.txt
+# generated: 2026-07-10T14:51:47Z
+28da9e955887b07514082855a29933c26c732a2795c05c7d17924bd850ac258f  Src/Zle/zle.h
+2bd4a1fb44f2d5d752f0dfd4d5420fce560f527088194b500773c8ddc9e693cc  Src/Zle/zle_move.c

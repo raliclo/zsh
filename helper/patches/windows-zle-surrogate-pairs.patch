@@ -1,0 +1,73 @@
+diff --git a/Src/Zle/zle.h b/Src/Zle/zle.h
+index bf479d4cc..e7712682d 100644
+--- a/Src/Zle/zle.h
++++ b/Src/Zle/zle.h
+@@ -75,6 +75,20 @@ typedef wint_t   ZLE_INT_T;
+ #define LASTFULLCHAR	lastchar_wide
+ #define LASTFULLCHAR_T  ZLE_INT_T
+ 
++/*
++ * On platforms where wchar_t is only 16 bits (Windows/Cygwin), a
++ * character outside the Basic Multilingual Plane -- most emoji -- is
++ * stored in the ZLE buffer as a UTF-16 surrogate pair: two consecutive
++ * ZLE_CHAR_T units instead of one. Unlike a combining character (a
++ * separate, zero-width unit that trails a base character), the two
++ * halves of a surrogate pair are both meaningless on their own and must
++ * always move, and get deleted, together. On platforms with a 32-bit
++ * wchar_t (Linux, macOS) these ranges never appear in decoded text, so
++ * the checks below are simply always false.
++ */
++#define ZSH_IS_HIGH_SURROGATE(c) ((c) >= 0xD800 && (c) <= 0xDBFF)
++#define ZSH_IS_LOW_SURROGATE(c)  ((c) >= 0xDC00 && (c) <= 0xDFFF)
++
+ /*
+  * We may need to handle combining character alignment.
+  * The following fix up the position of the cursor so that it
+diff --git a/Src/Zle/zle_move.c b/Src/Zle/zle_move.c
+index 7f4678683..1c2d141a9 100644
+--- a/Src/Zle/zle_move.c
++++ b/Src/Zle/zle_move.c
+@@ -122,6 +122,10 @@ mod_export void
+ inccs(void)
+ {
+     zlecs++;
++    if (zlecs > 0 && zlecs < zlell &&
++	ZSH_IS_HIGH_SURROGATE(zleline[zlecs-1]) &&
++	ZSH_IS_LOW_SURROGATE(zleline[zlecs]))
++	zlecs++;
+     alignmultiwordright(&zlecs, 1);
+ }
+ 
+@@ -133,6 +137,10 @@ mod_export void
+ deccs(void)
+ {
+     zlecs--;
++    if (zlecs > 0 && zlecs < zlell &&
++	ZSH_IS_LOW_SURROGATE(zleline[zlecs]) &&
++	ZSH_IS_HIGH_SURROGATE(zleline[zlecs-1]))
++	zlecs--;
+     alignmultiwordleft(&zlecs, 1);
+ }
+ 
+@@ -143,6 +151,10 @@ mod_export void
+ incpos(int *pos)
+ {
+     (*pos)++;
++    if (*pos > 0 && *pos < zlell &&
++	ZSH_IS_HIGH_SURROGATE(zleline[*pos-1]) &&
++	ZSH_IS_LOW_SURROGATE(zleline[*pos]))
++	(*pos)++;
+     alignmultiwordright(pos, 1);
+ }
+ 
+@@ -152,6 +164,10 @@ mod_export void
+ decpos(int *pos)
+ {
+     (*pos)--;
++    if (*pos > 0 && *pos < zlell &&
++	ZSH_IS_LOW_SURROGATE(zleline[*pos]) &&
++	ZSH_IS_HIGH_SURROGATE(zleline[*pos-1]))
++	(*pos)--;
+     alignmultiwordleft(pos, 1);
+ }
+ #endif
