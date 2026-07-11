@@ -22,12 +22,13 @@
  * shell metacharacters inside quoted arguments correctly.
  *
  * This program does the same environment setup zsh.cmd does (PATH
- * reordering, ZDOTDIR/TERMINFO, console code page), then forwards the
- * original command line's argument tail to zsh.exe byte-for-byte.
+ * reordering, ZDOTDIR/TERMINFO, console code page), then forwards its
+ * parsed argv to zsh.exe with Windows-compatible quoting.
  */
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #include <wchar.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,21 +58,66 @@ static void die(const wchar_t *msg) {
  * check that the built loader does not import msys-2.0.dll.
  */
 
-/* Skip argv[0] in a raw Win32 command line, per the standard CRT rule:
- * if it starts with '"', argv[0] runs to the next '"'; otherwise it runs
- * to the next whitespace. Returns a pointer to the (possibly empty)
- * remainder, with leading whitespace stripped. */
-static wchar_t *skip_argv0(wchar_t *cmdline) {
-    wchar_t *p = cmdline;
-    if (*p == L'"') {
-        p++;
-        while (*p && *p != L'"') p++;
-        if (*p == L'"') p++;
-    } else {
-        while (*p && *p != L' ' && *p != L'\t') p++;
+static void append_wstr(wchar_t **buf, size_t *len, size_t *cap,
+                        const wchar_t *s) {
+    size_t add = wcslen(s);
+    if (*len + add + 1 > *cap) {
+        size_t newcap = *cap ? *cap : 256;
+        while (*len + add + 1 > newcap) newcap *= 2;
+        wchar_t *newbuf = realloc(*buf, newcap * sizeof(wchar_t));
+        if (!newbuf) die(L"out of memory");
+        *buf = newbuf;
+        *cap = newcap;
     }
-    while (*p == L' ' || *p == L'\t') p++;
-    return p;
+    wmemcpy(*buf + *len, s, add);
+    *len += add;
+    (*buf)[*len] = L'\0';
+}
+
+static void append_wch(wchar_t **buf, size_t *len, size_t *cap, wchar_t ch) {
+    wchar_t tmp[2] = { ch, L'\0' };
+    append_wstr(buf, len, cap, tmp);
+}
+
+/* Quote argv using the Windows CRT convention. Passing the launcher raw
+ * command-line tail through again is tempting, but MSYS-to-native process
+ * creation may use quoting that is correct for the launcher argv and wrong
+ * when forwarded verbatim to the MSYS zsh child. Requoting the parsed argv
+ * keeps cases like zsh -fc 'ls "#trend"' intact. */
+static void append_quoted_arg(wchar_t **buf, size_t *len, size_t *cap,
+                              const wchar_t *arg) {
+    size_t backslashes = 0;
+    append_wch(buf, len, cap, L'"');
+    for (const wchar_t *p = arg; *p; p++) {
+        if (*p == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (*p == L'"') {
+            while (backslashes--) append_wstr(buf, len, cap, L"\\\\");
+            append_wstr(buf, len, cap, L"\\\"");
+            backslashes = 0;
+            continue;
+        }
+        while (backslashes--) append_wch(buf, len, cap, L'\\');
+        backslashes = 0;
+        append_wch(buf, len, cap, *p);
+    }
+    while (backslashes--) append_wstr(buf, len, cap, L"\\\\");
+    append_wch(buf, len, cap, L'"');
+}
+
+static wchar_t *build_child_cmdline(const wchar_t *zshExe, int argc,
+                                    wchar_t **argv) {
+    wchar_t *cmdline = NULL;
+    size_t len = 0, cap = 0;
+
+    append_quoted_arg(&cmdline, &len, &cap, zshExe);
+    for (int i = 1; i < argc; i++) {
+        append_wch(&cmdline, &len, &cap, L' ');
+        append_quoted_arg(&cmdline, &len, &cap, argv[i]);
+    }
+    return cmdline;
 }
 
 /* Build "/cygdrive/<lower-drive-letter>/rest/of/path" from an absolute
@@ -88,6 +134,42 @@ static void to_cygdrive(const wchar_t *winpath, wchar_t *out, size_t outlen) {
         i++;
     }
     out[base] = L'\0';
+}
+
+static int from_cygdrive(const wchar_t *posix, wchar_t *out, size_t outlen) {
+    const wchar_t *p = NULL;
+    wchar_t drive = L'\0';
+    size_t base = 0;
+
+    if (wcsncmp(posix, L"/cygdrive/", 10) == 0 && posix[10] &&
+        (posix[11] == L'\0' || posix[11] == L'/')) {
+        drive = posix[10];
+        p = posix + 11;
+    } else if (posix[0] == L'/' && posix[1] &&
+               (posix[2] == L'\0' || posix[2] == L'/')) {
+        drive = posix[1];
+        p = posix + 2;
+    } else {
+        return 0;
+    }
+
+    if (!((drive >= L'a' && drive <= L'z') ||
+          (drive >= L'A' && drive <= L'Z')) || outlen < 4) {
+        return 0;
+    }
+    if (drive >= L'a' && drive <= L'z') drive -= (L'a' - L'A');
+    out[base++] = drive;
+    out[base++] = L':';
+
+    if (!*p) {
+        out[base++] = L'\\';
+    }
+    while (*p && base + 1 < outlen) {
+        out[base++] = (*p == L'/') ? L'\\' : *p;
+        p++;
+    }
+    out[base] = L'\0';
+    return *p == L'\0';
 }
 
 int main(void) {
@@ -179,6 +261,7 @@ int main(void) {
     }
     SetEnvironmentVariableW(L"ZDOTDIR", dir);
     SetEnvironmentVariableW(L"ZSH_PORTABLE_DIR", dir);
+    SetEnvironmentVariableW(L"CHERE_INVOKING", L"1");
 
     wchar_t terminfoPath[MAX_PATH];
     {
@@ -194,12 +277,22 @@ int main(void) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 
-    /* --- Forward the original command line's argument tail verbatim -- */
-    wchar_t *fullCmdLine = GetCommandLineW();
-    wchar_t *args = skip_argv0(fullCmdLine);
+    /* --- Forward the launcher's argv to zsh.exe ---------------------- */
+    int argc = 0;
+    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) die(L"CommandLineToArgvW failed");
 
-    wchar_t newCmdLine[32768];
-    swprintf(newCmdLine, 32768, L"\"%ls\" %ls", zshExe, args);
+    wchar_t *newCmdLine = build_child_cmdline(zshExe, argc, argv);
+
+    wchar_t childCwd[MAX_PATH];
+    wchar_t pwd[MAX_PATH];
+    wchar_t *currentDirectory = NULL;
+    if (GetEnvironmentVariableW(L"PWD", pwd, MAX_PATH) > 0 &&
+        from_cygdrive(pwd, childCwd, MAX_PATH)) {
+        currentDirectory = childCwd;
+        SetEnvironmentVariableW(L"ZSH_START_CWD", pwd);
+        SetCurrentDirectoryW(childCwd);
+    }
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -207,7 +300,8 @@ int main(void) {
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
 
-    BOOL ok = CreateProcessW(zshExe, newCmdLine, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    BOOL ok = CreateProcessW(zshExe, newCmdLine, NULL, NULL, TRUE, 0,
+                             NULL, currentDirectory, &si, &pi);
     DWORD exitCode = 1;
     if (!ok) {
         fwprintf(stderr, L"zsh-launcher: failed to launch %ls (error %lu)\n", zshExe, GetLastError());
@@ -217,6 +311,9 @@ int main(void) {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
+
+    free(newCmdLine);
+    LocalFree(argv);
 
     SetConsoleOutputCP(origOutCP);
     SetConsoleCP(origInCP);
