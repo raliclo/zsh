@@ -30,11 +30,32 @@
 #include <windows.h>
 #include <wchar.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static void die(const wchar_t *msg) {
     fwprintf(stderr, L"zsh-launcher: %ls\n", msg);
     exit(1);
 }
+
+/*
+ * NOTE on the toolchain: this file must be compiled as a NATIVE Windows
+ * PE binary (mingw-w64 clang, /clang64/bin/clang.exe), never with the
+ * MSYS/Cygwin-runtime gcc. Two independent reasons:
+ * - an MSYS-linked loader invoked from a running MSYS zsh re-enters the
+ *   runtime's child-copy protocol, and nested shells can die before
+ *   main() with a signal-pipe creation error;
+ * - the MSYS runtime keeps most of the environment in its own POSIX
+ *   environ and mirrors only a handful of variables (PATH, SystemRoot,
+ *   ...) into the Win32 block, so in an MSYS-linked build the
+ *   GetEnvironmentVariableW calls below silently come back empty for
+ *   e.g. USERPROFILE or the caller's ZDOTDIR, breaking the handshake.
+ * In a native build the Win32 environment APIs used below see the full
+ * environment in every calling context: native callers (cmd, PowerShell,
+ * another program) obviously, and an MSYS zsh parent too, since the MSYS
+ * runtime fully exports its POSIX environ into the Win32 environment of
+ * any non-MSYS child it spawns. compile.sh enforces this with an objdump
+ * check that the built loader does not import msys-2.0.dll.
+ */
 
 /* Skip argv[0] in a raw Win32 command line, per the standard CRT rule:
  * if it starts with '"', argv[0] runs to the next '"'; otherwise it runs
@@ -103,15 +124,15 @@ int main(void) {
     swprintf(newPath, 65536, L"%ls;", dir);
     {
         wchar_t *ctx = NULL;
-        wchar_t *tmp = wcsdup(oldPath);
-        wchar_t *tok = wcstok(tmp, L";", &ctx);
+        wchar_t *tmp = _wcsdup(oldPath);
+        wchar_t *tok = wcstok_s(tmp, L";", &ctx);
         while (tok) {
-            if (wcscasecmp(tok, sys32) != 0 && wcscasecmp(tok, syswow) != 0 &&
-                wcscasecmp(tok, sysroot) != 0) {
+            if (_wcsicmp(tok, sys32) != 0 && _wcsicmp(tok, syswow) != 0 &&
+                _wcsicmp(tok, sysroot) != 0) {
                 wcscat(newPath, tok);
                 wcscat(newPath, L";");
             }
-            tok = wcstok(NULL, L";", &ctx);
+            tok = wcstok_s(NULL, L";", &ctx);
         }
         free(tmp);
     }
@@ -123,15 +144,34 @@ int main(void) {
     SetEnvironmentVariableW(L"PATH", newPath);
 
     /* --- ZDOTDIR / HOME bootstrap, same handshake as zsh.cmd: stash the
-     * caller's real ZDOTDIR (or HOME) so .zshenv can hand control back
-     * to it after setting up module_path/TERMINFO for the portable dir. */
+     * caller's real ZDOTDIR (or profile dir) in ZSH_ORIG_ZDOTDIR, and
+     * point ZDOTDIR at the portable dir. ZDOTDIR stays pointing there
+     * for the whole session tree (the portable rc stubs forward to the
+     * user's real ones -- see .zshenv in compile.sh), which is what
+     * makes a nested zsh.exe started from inside the session pick up
+     * the same bootstrap instead of a consumed, half-restored one.
+     * If ZSH_ORIG_ZDOTDIR is already set we ARE that nested case (or a
+     * nested launcher inside it): keep the original caller's value
+     * rather than clobbering it with the portable dir. */
+    /* Precedence for what counts as the user's dot dir:
+     * 1. a ZDOTDIR the caller set explicitly (and that isn't just the
+     *    portable dir inherited from an enclosing session) -- an
+     *    explicit override must win even inside a nested session;
+     * 2. an inherited ZSH_ORIG_ZDOTDIR -- we're nested, keep the
+     *    original caller's value instead of clobbering it;
+     * 3. USERPROFILE. */
     wchar_t origZdotdir[MAX_PATH];
     DWORD zdlen = GetEnvironmentVariableW(L"ZDOTDIR", origZdotdir, MAX_PATH);
-    if (zdlen == 0 || zdlen >= MAX_PATH) {
-        GetEnvironmentVariableW(L"USERPROFILE", origZdotdir, MAX_PATH);
+    if (zdlen > 0 && zdlen < MAX_PATH && _wcsicmp(origZdotdir, dir) != 0) {
+        SetEnvironmentVariableW(L"ZSH_ORIG_ZDOTDIR", origZdotdir);
+    } else {
+        DWORD origLen = GetEnvironmentVariableW(L"ZSH_ORIG_ZDOTDIR",
+                                                origZdotdir, MAX_PATH);
+        if (origLen == 0 || origLen >= MAX_PATH) {
+            GetEnvironmentVariableW(L"USERPROFILE", origZdotdir, MAX_PATH);
+            SetEnvironmentVariableW(L"ZSH_ORIG_ZDOTDIR", origZdotdir);
+        }
     }
-    SetEnvironmentVariableW(L"ZSH_ORIG_ZDOTDIR", origZdotdir);
-    SetEnvironmentVariableW(L"ZSH_WIN_HOME", origZdotdir[0] ? origZdotdir : NULL);
     {
         wchar_t userprofile[MAX_PATH];
         if (GetEnvironmentVariableW(L"USERPROFILE", userprofile, MAX_PATH))

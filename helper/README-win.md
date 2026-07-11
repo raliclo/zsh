@@ -13,7 +13,7 @@ zsh is a POSIX shell and cannot be built with MSVC alone; it needs the MSYS2
 ## Usage
 
 ```sh
-sh helper/install_build_tool.sh   # one-time: installs MSYS2 + gcc/make/autoconf/automake/ncurses-devel
+sh helper/install_build_tool.sh   # one-time: installs MSYS2 + MSYS GCC, native Clang, and build tools
 sh helper/compile.sh              # builds zsh into ./build
 sh helper/scoop_install.sh        # optional: install the result as a scoop app with a `zsh` shim
 zsh helper/test/test_windows_packaging.zsh <path-to-build/bin>  # optional: regression tests
@@ -27,11 +27,12 @@ Installs, in order:
 2. **MSYS2** (via scoop, falling back to winget) at
    `~/scoop/apps/msys2/current` (or `C:\msys64` if installed via winget)
 3. Build tools inside MSYS2 via `pacman`: `gcc`, `make`, `autoconf`,
-   `automake`, `ncurses-devel`
+   `automake`, `ncurses-devel`, and `mingw-w64-clang-x86_64-clang`
 
-These are the plain `msys/*` packages (POSIX runtime), not the
-`mingw-w64-*` cross-toolchain packages — zsh's autotools build expects a
-Cygwin-like environment.
+The zsh interpreter uses the plain `msys/*` packages because its autotools
+build expects a Cygwin-like environment. Only `zsh-loader.exe` uses the
+CLANG64 compiler, keeping the launcher independent of `msys-2.0.dll` so
+nested zsh invocations start with fresh runtime state.
 
 ### compile.sh
 
@@ -195,18 +196,40 @@ To remove: `scoop uninstall zsh`.
 
 Covers the packaging-specific fixes above: the multi-line `-c` /
 metacharacter-in-quotes bugs, bundled `find`/`xargs` taking priority over
-Windows' own, dynamic module loading, `PATH` ordering, and (best-effort —
-see the comment in the script) the ZLE surrogate-pair cursor/delete fix.
-Must be run with the build's own interpreter, since it needs `zsh/zpty` and
-is testing that build specifically, and the `build/bin` path must be passed
-explicitly rather than auto-detected — see "Known limitations" below for why:
+Windows' own, dynamic module loading, nested-session module loading and
+user-rc forwarding, `PATH` ordering, and (best-effort — see the comment in
+the script) the ZLE surrogate-pair cursor/delete fix. Must be run through
+the build's own **launcher** (`zsh-loader.exe`, not the bare `zsh.exe` —
+see the environment-loss item under "Known limitations"), since it needs
+`zsh/zpty` and is testing that build specifically, and the `build/bin`
+path must be passed explicitly rather than auto-detected — see "Known
+limitations" for why:
 
 ```sh
-build/bin/zsh.exe -f helper/test/test_windows_packaging.zsh "$(pwd)/build/bin"
+build/bin/zsh-loader.exe -f helper/test/test_windows_packaging.zsh "$(pwd)/build/bin"
 ```
 
 ## Known limitations
 
+- **The bare `zsh.exe`, spawned from another MSYS-runtime shell (Git
+  Bash, the system MSYS2 bash, ...), comes up with most of its
+  environment silently missing** (`USERPROFILE` included). The parent
+  shell sees a child importing a DLL *named* `msys-2.0.dll` — the same
+  name as its own runtime, but a different build — and hands the
+  environment over via its runtime's internal protocol instead of doing
+  a full Win32 environment export; our different-build DLL can't read
+  that protocol, so only the handful of variables such parents also
+  mirror into the Win32 block (`PATH`, `SystemRoot`, ...) arrive. Enter
+  through `zsh-loader.exe` or `zsh.cmd` instead: both are native (the
+  parent does a full Win32 export to them), and both re-derive and pin
+  the handshake variables before starting `zsh.exe`. This is also why
+  nested sessions work: `ZDOTDIR` stays pointed at the portable dir for
+  the whole session tree (with forwarding rc stubs handing off to the
+  user's real startup files), so a nested `zsh.exe` inherits a live
+  bootstrap rather than a consumed one, and a nested launcher keeps the
+  original `ZSH_ORIG_ZDOTDIR` (an explicitly set `ZDOTDIR` still wins
+  over the inherited one — see the precedence comment in
+  `zsh_launcher.c`).
 - **`/` resolves to the calling process's working directory, not a fixed
   filesystem root**, when `zsh.exe` (or anything that forwards to it) is
   run standalone without the rest of a normal MSYS2 install tree — this
