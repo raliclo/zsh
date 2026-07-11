@@ -5,7 +5,8 @@
 # MSYS2 (Cygwin-derived) POSIX runtime. This script installs:
 #   1. scoop        (via winget, if missing)
 #   2. MSYS2        (via scoop, with winget fallback)
-#   3. build tools  (gcc, make, autoconf, automake, ncurses-devel via pacman)
+#   3. build tools  (MSYS gcc for zsh, Clang for the native launcher,
+#                    make, autoconf, automake, ncurses-devel via pacman)
 #
 # Run from Git Bash or any POSIX shell on Windows:
 #   sh helper/install_build_tool.sh
@@ -49,13 +50,15 @@ if [ ! -d "$MSYS2_ROOT/etc/pacman.d/gnupg" ]; then
 fi
 
 # --- 4. Build tools inside MSYS2 -------------------------------------------
-# NOTE: use the plain 'msys' packages (POSIX runtime), NOT mingw-w64-* ones.
-echo "==> Installing gcc, make, autoconf, automake, ncurses-devel..."
+# zsh itself needs the plain MSYS gcc and POSIX runtime. The small launcher
+# uses CLANG64 so it does not import msys-2.0.dll and can safely be invoked by
+# an already-running MSYS zsh.
+echo "==> Installing MSYS build tools and Clang for the native launcher..."
 "$MSYS2_ROOT/usr/bin/pacman.exe" -Sy --noconfirm --needed \
-    gcc make autoconf automake ncurses-devel
+    gcc make autoconf automake ncurses-devel mingw-w64-clang-x86_64-clang
 
 echo "==> Done. Toolchain check:"
 "$MSYS2_ROOT/usr/bin/bash.exe" -lc \
-    'export PATH=/usr/bin:$PATH; gcc --version | head -1; make --version | head -1; autoconf --version | head -1'
+    'export PATH=/usr/bin:$PATH; gcc --version | head -1; /clang64/bin/clang.exe --version | head -1; make --version | head -1; autoconf --version | head -1'
 
 echo "==> Next step: sh helper/compile.sh"
