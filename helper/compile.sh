@@ -270,7 +270,7 @@ fi
         echo '       run helper/install_build_tool.sh to install mingw-w64-clang-x86_64-clang' >&2
         exit 1
     fi
-    \"\$NATIVE_CLANG\" -O2 -o bin/zsh-loader.exe '$SRC_MSYS/helper/zsh_launcher.c'
+    \"\$NATIVE_CLANG\" -O2 -o bin/zsh-loader.exe '$SRC_MSYS/helper/zsh_launcher.c' -lshell32
 
     # Guard the property that makes the loader safe to invoke from a running
     # MSYS zsh. Using /usr/bin/clang or /usr/bin/gcc here would silently
@@ -371,6 +371,10 @@ fi
 if [[ -n ${ZSH_WIN_HOME:-} ]]; then
   HOME=${ZSH_WIN_HOME//\\//}
   export HOME
+fi
+if [[ -n ${ZSH_START_CWD:-} && -d ${ZSH_START_CWD:-} ]]; then
+  cd -- ${ZSH_START_CWD:-} 2>/dev/null || true
+  unset ZSH_START_CWD
 fi
 if [[ -o interactive ]]; then
   PROMPT="%n@%~%# "
