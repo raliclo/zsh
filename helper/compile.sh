@@ -258,11 +258,29 @@ fi
     # it truncates a multi-line -c argument at the first embedded newline,
     # and can leak '|' and other metacharacters out of what looks like a
     # quoted string. Neither is fixable from inside zsh.cmd -- the
-    # corruption happens before any of its lines execute. This launcher is
-    # a real PE binary, so argv reaches zsh.exe unmodified; package it as
-    # zsh-loader.exe and let the Scoop shim named zsh point at it.
+    # corruption happens before any of its lines execute. This launcher must
+    # be a native Windows PE binary, not an MSYS binary: an MSYS-linked loader
+    # re-enters the runtime's child-copy protocol when invoked from zsh and
+    # nested shells can fail before main() with a signal-pipe creation error.
+    # Package it as zsh-loader.exe and let the Scoop shim named zsh point at it.
     echo '==> Compiling native launcher (bin/zsh-loader.exe -> zsh.exe)...'
-    gcc -O2 -o bin/zsh-loader.exe '$SRC_MSYS/helper/zsh_launcher.c'
+    NATIVE_CLANG=/clang64/bin/clang.exe
+    if [ ! -x \"\$NATIVE_CLANG\" ]; then
+        echo 'error: native Clang not found at /clang64/bin/clang.exe' >&2
+        echo '       run helper/install_build_tool.sh to install mingw-w64-clang-x86_64-clang' >&2
+        exit 1
+    fi
+    \"\$NATIVE_CLANG\" -O2 -o bin/zsh-loader.exe '$SRC_MSYS/helper/zsh_launcher.c'
+
+    # Guard the property that makes the loader safe to invoke from a running
+    # MSYS zsh. Using /usr/bin/clang or /usr/bin/gcc here would silently
+    # produce a loader linked to msys-2.0.dll and restore the nested
+    # child_copy/signal-pipe failure.
+    if objdump -p bin/zsh-loader.exe \
+        | grep -qi 'DLL Name:[[:space:]]*msys-2\.0\.dll'; then
+        echo 'error: zsh-loader.exe unexpectedly imports msys-2.0.dll' >&2
+        exit 1
+    fi
 "
 
 # --- Portable launcher + zsh bootstrap --------------------------------------
@@ -273,8 +291,13 @@ cat > "$BUILD/bin/zsh.cmd" <<'EOF_CMD'
 @echo off
 setlocal EnableDelayedExpansion
 set "ZSH_PORTABLE_DIR=%~dp0"
+rem Strip %~dp0's trailing backslash so the value matches the form the
+rem native launcher (zsh-loader.exe) uses -- nested sessions compare
+rem ZDOTDIR against ZSH_PORTABLE_DIR and must agree regardless of which
+rem entry point set them.
+if "%ZSH_PORTABLE_DIR:~-1%"=="\" set "ZSH_PORTABLE_DIR=%ZSH_PORTABLE_DIR:~0,-1%"
 set "ZSH_WIN_HOME=%USERPROFILE%"
-set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%share/terminfo"
+set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%/share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"
 set "TERMINFO=/cygdrive/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
@@ -306,11 +329,14 @@ set "_ZSH_SYS32="
 set "_ZSH_SYSWOW="
 set "_ZSH_WINDIR="
 
-if defined ZDOTDIR (
-    set "ZSH_ORIG_ZDOTDIR=%ZDOTDIR%"
-) else (
-    set "ZSH_ORIG_ZDOTDIR=%USERPROFILE%"
-)
+rem Precedence for what counts as the user's dot dir (same rules as the
+rem native launcher): an explicitly set ZDOTDIR that isn't just the
+rem portable dir inherited from an enclosing session wins even when
+rem nested; otherwise an inherited ZSH_ORIG_ZDOTDIR is kept (we're
+rem nested -- don't clobber the original caller's value); otherwise
+rem fall back to USERPROFILE.
+if defined ZDOTDIR if /I not "%ZDOTDIR%"=="%ZSH_PORTABLE_DIR%" set "ZSH_ORIG_ZDOTDIR=%ZDOTDIR%"
+if not defined ZSH_ORIG_ZDOTDIR set "ZSH_ORIG_ZDOTDIR=%USERPROFILE%"
 set "ZDOTDIR=%ZSH_PORTABLE_DIR%"
 
 rem %* is passed through to zsh.exe as-is below; disable delayed expansion
@@ -318,7 +344,7 @@ rem first so a literal "!" in a forwarded argument survives untouched.
 rem (zsh.exe, not zsh-loader.exe: this script already does the same env setup
 rem the native launcher does, so it calls the real interpreter directly.)
 setlocal DisableDelayedExpansion
-"%ZSH_PORTABLE_DIR%zsh.exe" %*
+"%ZSH_PORTABLE_DIR%\zsh.exe" %*
 set "_ZSH_EXIT=%ERRORLEVEL%"
 if defined _ZSH_ORIG_CP chcp %_ZSH_ORIG_CP% >nul
 exit /b %_ZSH_EXIT%
@@ -330,9 +356,11 @@ sed -i 's/$/\r/' "$BUILD/bin/zsh.cmd"
 
 cat > "$BUILD/bin/.zshenv" <<'EOF_ZSHENV'
 zsh_portable_dir=${ZSH_PORTABLE_DIR:-}
+zsh_portable_dir_win=
 if [[ -n $zsh_portable_dir ]]; then
   zsh_portable_dir=${zsh_portable_dir//\\//}
   zsh_portable_dir=${zsh_portable_dir%/}
+  zsh_portable_dir_win=$zsh_portable_dir
   if [[ $zsh_portable_dir == [A-Za-z]:/* ]]; then
     zsh_portable_dir="/cygdrive/${(L)zsh_portable_dir[1]}/${zsh_portable_dir[4,-1]}"
   fi
@@ -357,16 +385,57 @@ if [[ -o interactive ]]; then
   precmd_functions=(${precmd_functions:#zsh_portable_fix_keys} zsh_portable_fix_keys)
 fi
 
+# ZDOTDIR deliberately stays pointing at the portable dir for the whole
+# session tree (ZSH_ORIG_ZDOTDIR/ZSH_PORTABLE_DIR/ZSH_WIN_HOME stay
+# exported too): that is what lets a nested zsh.exe, spawned from inside
+# this session, find this same bootstrap and load its modules, instead of
+# inheriting a consumed, half-restored environment. The user's own
+# startup files still run: their .zshenv here, and .zshrc/.zprofile/
+# .zlogin via the matching forwarding stubs next to this file -- each
+# sourced with ZDOTDIR temporarily set to the user's real dot dir, since
+# that is what those files expect it to mean.
 if [[ -n ${ZSH_ORIG_ZDOTDIR:-} ]]; then
-  zsh_orig_zdotdir=${ZSH_ORIG_ZDOTDIR//\\//}
-  ZDOTDIR=$zsh_orig_zdotdir
-  export ZDOTDIR
-  if [[ $ZDOTDIR != $zsh_portable_dir && -r $ZDOTDIR/.zshenv ]]; then
-    source $ZDOTDIR/.zshenv
+  zsh_portable_user_zdotdir=${ZSH_ORIG_ZDOTDIR//\\//}
+  if [[ $zsh_portable_user_zdotdir != $zsh_portable_dir_win && \
+        $zsh_portable_user_zdotdir != $zsh_portable_dir && \
+        -r $zsh_portable_user_zdotdir/.zshenv ]]; then
+    ZDOTDIR=$zsh_portable_user_zdotdir
+    source $zsh_portable_user_zdotdir/.zshenv
+    # honor a ZDOTDIR change made by the user's own .zshenv
+    if [[ ${ZDOTDIR:-} != $zsh_portable_user_zdotdir ]]; then
+      ZSH_ORIG_ZDOTDIR=$ZDOTDIR
+      export ZSH_ORIG_ZDOTDIR
+    fi
+    ZDOTDIR=${ZSH_PORTABLE_DIR:-}
+    export ZDOTDIR
   fi
-  unset ZSH_ORIG_ZDOTDIR ZSH_PORTABLE_DIR ZSH_WIN_HOME zsh_portable_dir zsh_orig_zdotdir
+  unset zsh_portable_user_zdotdir
 fi
+unset zsh_portable_dir zsh_portable_dir_win
 EOF_ZSHENV
+
+# Forwarding stubs for the remaining startup files: ZDOTDIR points at the
+# portable dir (see .zshenv above), so zsh looks for these HERE; each one
+# hands off to the user's real counterpart.
+for rc in .zshrc .zprofile .zlogin; do
+cat > "$BUILD/bin/$rc" <<EOF_RC
+# Forwarding stub: ZDOTDIR points at the portable runtime dir for the
+# whole session (see .zshenv there); this loads the user's real $rc
+# from their own dot dir, with ZDOTDIR temporarily set the way that
+# file expects.
+if [[ -n \${ZSH_ORIG_ZDOTDIR:-} ]]; then
+  zsh_portable_user_zdotdir=\${ZSH_ORIG_ZDOTDIR//\\\\//}
+  if [[ \$zsh_portable_user_zdotdir != \${\${ZSH_PORTABLE_DIR:-}//\\\\//} && \\
+        -r \$zsh_portable_user_zdotdir/$rc ]]; then
+    ZDOTDIR=\$zsh_portable_user_zdotdir
+    source \$zsh_portable_user_zdotdir/$rc
+    ZDOTDIR=\${ZSH_PORTABLE_DIR:-\$zsh_portable_user_zdotdir}
+    export ZDOTDIR
+  fi
+  unset zsh_portable_user_zdotdir
+fi
+EOF_RC
+done
 
 # --- Stamp the build: zsh version + source commit ---------------------------
 {

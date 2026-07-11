@@ -5,21 +5,34 @@
 # binaries directly -- no PowerShell -- since PowerShell's own argument
 # quoting is a separate, unrelated source of test noise.
 #
-# Must be run with the build's own interpreter (needs zsh/zpty, and is
-# testing that build specifically), not a system zsh. The build/bin path
-# is a REQUIRED argument, not auto-detected: this build's msys-2.0.dll,
-# run standalone without the rest of a normal MSYS2 install tree,
-# resolves '/' (and so $PWD, and so $0:A) to the calling process's cwd
-# rather than a fixed filesystem root -- see the bug report at the
-# bottom of this file -- so there's no reliable way from inside the
-# script to derive its own location or the caller's cwd.
-#   build/bin/zsh.exe -f helper/test/test_windows_packaging.zsh <build/bin path>
+# Must be run through the build's own LAUNCHER (zsh-loader.exe), not the
+# bare zsh.exe interpreter and not a system zsh:
+#   build/bin/zsh-loader.exe -f helper/test/test_windows_packaging.zsh <build/bin path>
+# Two reasons. It needs zsh/zpty and is testing this build specifically.
+# And when the bare zsh.exe is spawned from another MSYS-runtime shell
+# (Git Bash, the system MSYS2 bash, ...), that parent sees a child
+# importing a DLL named msys-2.0.dll -- same NAME as its own runtime,
+# but a different build -- and hands the environment over via its
+# runtime's internal protocol instead of the Win32 environment block;
+# our different-build DLL can't read that, so the bare interpreter comes
+# up with most of its environment (USERPROFILE included) silently
+# missing, and every launcher handshake test below misbehaves for
+# reasons that have nothing to do with the launcher. Entering through
+# zsh-loader.exe (a native PE, so the parent does a full Win32 export to
+# it) avoids all of that.
+#
+# The build/bin path is a REQUIRED argument, not auto-detected: this
+# build's msys-2.0.dll, run standalone without the rest of a normal
+# MSYS2 install tree, resolves '/' (and so $PWD, and so $0:A) to the
+# calling process's cwd rather than a fixed filesystem root -- see the
+# bug report at the bottom of this file -- so there's no reliable way
+# from inside the script to derive its own location or the caller's cwd.
 
 emulate -L zsh
 setopt no_unset pipefail
 
 if [[ -z ${1:-} ]]; then
-    print -u2 "usage: zsh.exe -f test_windows_packaging.zsh <path to build/bin>"
+    print -u2 "usage: zsh-loader.exe -f test_windows_packaging.zsh <path to build/bin>"
     exit 2
 fi
 BINDIR=$1
@@ -99,6 +112,52 @@ test_modules_load() {
         pass_test "zle/ksh93/complete/compctl modules load"
     else
         fail_test "zle/ksh93/complete/compctl modules load" "got: ${(qq)out}"
+    fi
+}
+
+# --- nesting: a zsh spawned from INSIDE a portable-zsh session must be
+# able to load modules too. ZDOTDIR stays pointed at the portable dir
+# for the whole session tree (with forwarding rc stubs for the user's
+# real startup files), so a nested bare zsh.exe -- or a nested launcher,
+# whose ZSH_ORIG_ZDOTDIR guard must keep the original caller's value
+# instead of clobbering it -- inherits a live bootstrap, not a consumed
+# one. ---------------------------------------------------------------
+test_nested_zsh() {
+    local out
+    out=$("$LAUNCHER" -c 'zsh.exe -c "zmodload zsh/zle && print nested_interp_ok"' 2>&1)
+    if [[ $out == *nested_interp_ok* ]]; then
+        pass_test "nested bare zsh.exe loads modules"
+    else
+        fail_test "nested bare zsh.exe loads modules" "got: ${(qq)out}"
+    fi
+    out=$("$LAUNCHER" -c 'zsh-loader.exe -c "zmodload zsh/zle && print nested_loader_ok; print -r -- ORIG=\$ZSH_ORIG_ZDOTDIR"' 2>&1)
+    if [[ $out == *nested_loader_ok* && $out != *ORIG=*build[/\\]bin* ]]; then
+        pass_test "nested launcher loads modules and preserves the original ZSH_ORIG_ZDOTDIR"
+    else
+        fail_test "nested launcher loads modules and preserves the original ZSH_ORIG_ZDOTDIR" "got: ${(qq)out}"
+    fi
+}
+
+# --- the user's real startup files must still be loaded even though
+# ZDOTDIR points at the portable dir: the forwarding stubs (.zshenv,
+# .zshrc, ...) hand off to $ZSH_ORIG_ZDOTDIR's counterparts. Verified
+# with a scratch ZDOTDIR so the test doesn't depend on (or execute) the
+# developer's real ~/.zshrc. ------------------------------------------
+test_user_rc_forwarding() {
+    local scratch out
+    scratch=$BINDIR/nested-rc-test.$$
+    mkdir -p $scratch || {
+        fail_test "user rc forwarding" "could not create scratch dir $scratch"
+        return
+    }
+    print 'print -r -- user_zshenv_ran' > $scratch/.zshenv
+    print 'print -r -- user_zshrc_ran'  > $scratch/.zshrc
+    out=$(ZDOTDIR=$scratch "$LAUNCHER" -i -c 'print -r -- session_ok' 2>&1)
+    rm -rf $scratch
+    if [[ $out == *user_zshenv_ran* && $out == *user_zshrc_ran* && $out == *session_ok* ]]; then
+        pass_test "user .zshenv/.zshrc still run via the forwarding stubs"
+    else
+        fail_test "user .zshenv/.zshrc still run via the forwarding stubs" "got: ${(qq)out}"
     fi
 }
 
@@ -216,7 +275,11 @@ test_emoji_cursor_and_delete() {
     local session=zsh_emoji_test
     zpty -d $session 2>/dev/null
 
-    local spawn_cmd="TERMINFO='$BINDIR/share/terminfo' ZDOTDIR='$BINDIR' ZSH_PORTABLE_DIR='$BINDIR' TERM=xterm PS1='%% ' '$INTERP' -i"
+    # ZSH_ORIG_ZDOTDIR is pinned to $BINDIR so the forwarding stubs see
+    # user-dir == portable-dir and skip sourcing the developer's real
+    # ~/.zshrc into the pty session (slow, noisy, and it would redefine
+    # the prompt this test synchronizes on).
+    local spawn_cmd="TERMINFO='$BINDIR/share/terminfo' ZDOTDIR='$BINDIR' ZSH_ORIG_ZDOTDIR='$BINDIR' ZSH_PORTABLE_DIR='$BINDIR' TERM=xterm PS1='%% ' '$INTERP' -i"
     if ! zpty $session $spawn_cmd; then
         fail_test "emoji cursor/delete test setup" "could not start pty session"
         return
@@ -269,6 +332,8 @@ test_pipe_in_quotes
 test_find_bundled
 test_xargs_bundled
 test_modules_load
+test_nested_zsh
+test_user_rc_forwarding
 test_path_system32_last
 test_pid_is_real_winpid
 test_emoji_cursor_and_delete
