@@ -198,6 +198,20 @@ static int option_takes_command(const wchar_t *arg) {
     return 0;
 }
 
+/* True if s contains a double quote that is NOT backslash-escaped (an even
+ * number of backslashes precedes it, zero included). */
+static int has_bare_quote(const wchar_t *s) {
+    for (const wchar_t *p = s; *p; p++) {
+        if (*p == L'"') {
+            size_t bs = 0;
+            const wchar_t *q = p;
+            while (q > s && q[-1] == L'\\') { bs++; q--; }
+            if ((bs & 1) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
 static void protect_command_arg(int argc, wchar_t **argv) {
     static wchar_t evalCommand[] =
         L"eval $ZSH_LOADER_SCRIPT; _zsh_loader_status=$?; "
@@ -205,9 +219,31 @@ static void protect_command_arg(int argc, wchar_t **argv) {
 
     for (int i = 1; i + 1 < argc; i++) {
         if (option_takes_command(argv[i])) {
+            const wchar_t *script;
+            /* Callers disagree on how to quote the -c script, and the two
+             * conventions are mutually exclusive on the wire:
+             *  - MSYS/Cygwin (Git Bash), cmd, and PowerShell 7.3+ escape
+             *    embedded quotes as \" , so CommandLineToArgvW parses the
+             *    script back into a single, correct argv[i+1]. After
+             *    stripping the raw tail's outer quote pair the interior
+             *    still shows every embedded quote as \" -- no bare quotes.
+             *  - Windows PowerShell 5.1 passes embedded quotes bare, so
+             *    CommandLineToArgvW loses or splits them (argv[i+1] is
+             *    wrong), while stripping the raw tail's outer quote pair
+             *    recovers the script verbatim -- and its interior still
+             *    contains bare, unescaped quotes.
+             * So: strip the raw tail's outer quotes; if the result has a
+             * bare quote it is the PS 5.1 form, use it; otherwise trust the
+             * CommandLineToArgvW parse. Either way the script reaches the
+             * child out-of-band via ZSH_LOADER_SCRIPT, never re-quoted onto
+             * a command line. */
             wchar_t *rawScript = raw_command_arg();
-            SetEnvironmentVariableW(L"ZSH_LOADER_SCRIPT",
-                                    rawScript ? rawScript : argv[i + 1]);
+            if (rawScript && has_bare_quote(rawScript)) {
+                script = rawScript;
+            } else {
+                script = argv[i + 1];
+            }
+            SetEnvironmentVariableW(L"ZSH_LOADER_SCRIPT", script);
             free(rawScript);
             argv[i + 1] = evalCommand;
             return;
@@ -277,11 +313,14 @@ int main(void) {
     if (!lastSlash) die(L"unexpected exe path (no backslash)");
     *lastSlash = L'\0';
 
-    /* The real interpreter is installed as zsh.exe; this launcher is
+    /* The real interpreter is installed as usr\bin\zsh.exe; this launcher is
      * packaged as zsh-loader.exe and used by the Scoop shim named zsh for
      * programmatic callers that need argv preserved exactly. */
     wchar_t zshExe[MAX_PATH];
-    swprintf(zshExe, MAX_PATH, L"%ls\\zsh.exe", dir);
+    swprintf(zshExe, MAX_PATH, L"%ls\\usr\\bin\\zsh.exe", dir);
+    if (GetFileAttributesW(zshExe) == INVALID_FILE_ATTRIBUTES) {
+        swprintf(zshExe, MAX_PATH, L"%ls\\zsh.exe", dir);
+    }
 
     /* --- PATH: prepend our dir, push Windows system dirs to the end ---
      * Mirrors zsh.cmd: those dirs ship their own find/sort/more/where
@@ -298,7 +337,7 @@ int main(void) {
     GetEnvironmentVariableW(L"PATH", oldPath, 32768);
 
     wchar_t newPath[65536];
-    swprintf(newPath, 65536, L"%ls;", dir);
+    swprintf(newPath, 65536, L"%ls;%ls\\usr\\bin;", dir, dir);
     {
         wchar_t *ctx = NULL;
         wchar_t *tmp = _wcsdup(oldPath);
