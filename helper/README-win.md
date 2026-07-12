@@ -17,6 +17,7 @@ sh helper/install_build_tool.sh   # one-time: installs MSYS2 + MSYS GCC, native 
 sh helper/compile.sh              # builds zsh into ./build
 sh helper/scoop_install.sh        # optional: install the result as a scoop app with a `zsh` shim
 zsh helper/test/test_windows_packaging.zsh <path-to-build/bin>  # optional: regression tests
+helper\test\run_all_tests.bat     # optional: run all helper/test/*.zsh tests from cmd/PowerShell
 ```
 
 ### install_build_tool.sh
@@ -77,7 +78,7 @@ untouched. Fix `core.autocrlf` and restore LF endings to avoid this path.
 
 | File | What it is | When to use it |
 |---|---|---|
-| `zsh-loader.exe` | Native launcher (compiled from `helper/zsh_launcher.c`) that sets up the environment, then forwards to `zsh.exe` with argv untouched | **Default choice**, especially for programmatic callers (spawning zsh as a subprocess from another program) |
+| `zsh-loader.exe` | Native launcher (compiled from `helper/zsh_launcher.c`) that sets up the environment, then forwards to `zsh.exe` — reconstructing the `-c` script so both MSYS and PowerShell quoting survive (see below) | **Default choice**, especially for programmatic callers (spawning zsh as a subprocess from another program) |
 | `zsh.cmd` | Batch-file launcher doing the same environment setup | Interactive use from `cmd.exe` / double-click; equivalent to `zsh-loader.exe` for normal typed commands |
 | `zsh.exe` | The real interpreter, built by `configure`/`make` | Not meant to be run directly — needs `ZDOTDIR`/`ZSH_PORTABLE_DIR`/`TERMINFO` set by hand first (see `.zshenv`) |
 
@@ -91,8 +92,34 @@ embedded newline, and can leak `|` and other metacharacters out of what
 looks like a quoted string. Neither is fixable from inside `zsh.cmd`, since
 the corruption happens before any of its lines run. `zsh-loader.exe` is a real PE
 executable, so Windows hands it the process's actual command line
-unmodified and the standard argv-parsing convention round-trips embedded
-newlines and metacharacters inside quoted arguments correctly.
+unmodified, which is what makes correct handling possible.
+
+### How `zsh-loader.exe` recovers the `-c` script
+
+Callers quote a `-c` script incompatibly, and the two conventions are
+mutually exclusive on the wire:
+
+- **MSYS/Cygwin (Git Bash), `cmd`, and PowerShell 7.3+** escape embedded
+  quotes as `\"`. `CommandLineToArgvW` (the standard Windows argv parser)
+  unescapes them correctly, so its parsed `-c` argument is right.
+- **Windows PowerShell 5.1** passes embedded quotes *bare*. That makes
+  `CommandLineToArgvW` lose or split them, so its parse is wrong — but
+  stripping the raw command-line tail's outer quote pair recovers the
+  script verbatim.
+
+Trusting either one alone breaks the other (e.g. from Git Bash,
+`zsh -c 'echo "x"; [[ "test" == t* ]] && echo ok'` would otherwise print
+`"x"` with literal quote marks and the pattern match would fail). The
+launcher picks between them by a reliable tell: after stripping the raw
+tail's outer quotes, **a remaining bare (un-`\`-escaped) quote means the
+PowerShell-5.1 form** — use the raw tail; otherwise trust the
+`CommandLineToArgvW` parse. Either way the recovered script is handed to
+`zsh.exe` out-of-band through the `ZSH_LOADER_SCRIPT` environment variable
+and run via `eval`, so it is never re-quoted onto a command line. (Not
+handled: a `-c` script *followed by* positional arguments — rare, and
+already unsupported by this packaging. `helper/test/cmdline_diag.c` is a
+standalone diagnostic that prints what any given caller actually produced,
+for narrowing this down further.)
 
 `build/bin` is self-contained — the required MSYS2 DLLs sit next to
 `zsh.exe`, so it runs from Git Bash, cmd, or PowerShell without MSYS2 on
@@ -195,19 +222,26 @@ To remove: `scoop uninstall zsh`.
 ## Regression tests (helper/test/test_windows_packaging.zsh)
 
 Covers the packaging-specific fixes above: the multi-line `-c` /
-metacharacter-in-quotes bugs, bundled `find`/`xargs` taking priority over
-Windows' own, dynamic module loading, nested-session module loading and
-user-rc forwarding, `PATH` ordering, and (best-effort — see the comment in
-the script) the ZLE surrogate-pair cursor/delete fix. Must be run through
-the build's own **launcher** (`zsh-loader.exe`, not the bare `zsh.exe` —
-see the environment-loss item under "Known limitations"), since it needs
-`zsh/zpty` and is testing that build specifically, and the `build/bin`
-path must be passed explicitly rather than auto-detected — see "Known
-limitations" for why:
+metacharacter-in-quotes bugs, embedded double quotes in a `-c` script
+surviving as real quoting (the MSYS `-c` quote-forwarding bug — see "How
+`zsh-loader.exe` recovers the `-c` script"), bundled `find`/`xargs` taking
+priority over Windows' own, dynamic module loading, nested-session module
+loading and user-rc forwarding, `PATH` ordering, and (best-effort — see the
+comment in the script) the ZLE surrogate-pair cursor/delete fix. Must be run
+through the build's own **launcher** (`zsh-loader.exe`, not the bare
+`zsh.exe` — see the environment-loss item under "Known limitations"), since
+it needs `zsh/zpty` and is testing that build specifically, and the
+`build/bin` path must be passed explicitly rather than auto-detected — see
+"Known limitations" for why:
 
 ```sh
 build/bin/zsh-loader.exe -f helper/test/test_windows_packaging.zsh "$(pwd)/build/bin"
 ```
+
+`helper/test/cmdline_diag.c` is a companion standalone diagnostic (not part
+of the suite): build it with the same native clang toolchain and run the
+argument form that misbehaves from the shell in question to see the raw
+`GetCommandLineW()` string and the `CommandLineToArgvW()` token split.
 
 ## Known limitations
 
