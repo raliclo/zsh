@@ -146,6 +146,9 @@ The launcher/bootstrap also:
   original code page on exit, so UTF-8 output (and typed multibyte input)
   round-trips correctly instead of showing as mojibake on a console left on
   a legacy code page;
+- sets `LC_CTYPE=C.UTF-8` before starting the MSYS zsh runtime, so Windows
+  Unicode filenames (for example Chinese `.xlsx` names) are decoded and
+  printed as UTF-8 instead of through a legacy code page;
 - sets `HOME` from Windows `%USERPROFILE%`, so `~/` resolves to your Windows
   profile instead of a missing `/home/<user>` directory;
 - sets `TERMINFO` before zsh starts and packages `share/terminfo`, so `tput`

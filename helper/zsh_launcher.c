@@ -405,6 +405,13 @@ int main(void) {
     }
     SetEnvironmentVariableW(L"TERMINFO", terminfoPath);
 
+    /* MSYS uses the process locale for multibyte filename conversion. Keep
+     * LC_CTYPE UTF-8 so Windows Unicode filenames round-trip through zsh. */
+    SetEnvironmentVariableW(L"LC_CTYPE", L"C.UTF-8");
+    if (GetEnvironmentVariableW(L"LANG", NULL, 0) == 0) {
+        SetEnvironmentVariableW(L"LANG", L"C.UTF-8");
+    }
+
     /* --- Console code page: switch to UTF-8, restore on exit --- */
     UINT origOutCP = GetConsoleOutputCP();
     UINT origInCP = GetConsoleCP();
