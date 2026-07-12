@@ -128,7 +128,7 @@ test_portable_usr_bin_tools() {
     local out
     out=$("$LAUNCHER" -f -c '
         test -x /usr/bin/env &&
-        for tool in stty reset tset infocmp tput; do
+        for tool in ls locale stty reset tset infocmp tput; do
             command -v $tool | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || exit 10
         done &&
         print tools_ok
@@ -137,6 +137,33 @@ test_portable_usr_bin_tools() {
         pass_test "/usr/bin/env and terminal helpers resolve from the portable runtime"
     else
         fail_test "/usr/bin/env and terminal helpers resolve from the portable runtime" "got: ${(qq)out}"
+    fi
+}
+
+# --- Windows Unicode filenames must round-trip through zsh as UTF-8.
+# Without LC_CTYPE=UTF-8 before the MSYS runtime starts, names such as
+# Chinese .xlsx files can be decoded through a legacy code page and show
+# up as replacement characters or mojibake in `ls`. The filename below is
+# "美國工作薪資稅務試算表.xlsx", encoded as UTF-8 octal escapes so this
+# test file itself stays ASCII-safe. -----------------------------------
+test_utf8_filename_roundtrip() {
+    local out
+    out=$("$LAUNCHER" -f -c '
+        tmp=${TMPDIR:-/tmp}/zsh-utf8-filename.$$
+        mkdir -p -- $tmp || exit 1
+        cd -- $tmp || exit 1
+        name=$(printf "\347\276\216\345\234\213\345\267\245\344\275\234\350\226\252\350\263\207\347\250\205\345\213\231\350\251\246\347\256\227\350\241\250.xlsx")
+        : > $name || exit 1
+        ls_out=$(command ls)
+        rm -f -- $name
+        cd / || exit 1
+        rmdir -- $tmp
+        [[ $ls_out == *$name* ]] && print utf8_filename_ok
+    ' 2>&1)
+    if [[ $out == *utf8_filename_ok* ]]; then
+        pass_test "UTF-8 filenames round-trip through ls"
+    else
+        fail_test "UTF-8 filenames round-trip through ls" "got: ${(qq)out}"
     fi
 }
 
@@ -370,6 +397,7 @@ test_embedded_quotes
 test_find_bundled
 test_xargs_bundled
 test_portable_usr_bin_tools
+test_utf8_filename_roundtrip
 test_modules_load
 test_nested_zsh
 test_user_rc_forwarding
