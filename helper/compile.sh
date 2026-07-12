@@ -261,7 +261,7 @@ fi
     # list intentionally small: common pipeline tools, terminal-state tools,
     # and sh/env, not the whole MSYS /usr/bin directory. ps must be the
     # MSYS/Cygwin one with -W support, not BusyBox ps.
-    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee stty reset tset infocmp tput; do
+    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee ls locale stty reset tset infocmp tput; do
         if command -v \$tool.exe >/dev/null 2>&1; then
             tool_exe=\"\$(command -v \$tool.exe)\"
             if [ \"\$tool\" = ps ] && ! \"\$tool_exe\" -W >/dev/null 2>&1; then
@@ -339,6 +339,8 @@ set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%/share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"
 set "TERMINFO=/cygdrive/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
+set "LC_CTYPE=C.UTF-8"
+if not defined LANG set "LANG=C.UTF-8"
 
 rem Switch the console to UTF-8 (65001) so zsh's UTF-8 output and typed
 rem multibyte input round-trip correctly; without this, a console left on
@@ -405,6 +407,12 @@ if [[ -n $zsh_portable_dir ]]; then
   module_path=("$zsh_portable_dir" $module_path)
   TERMINFO="$zsh_portable_dir/share/terminfo"
   export TERMINFO
+fi
+LC_CTYPE=C.UTF-8
+export LC_CTYPE
+if [[ -z ${LANG:-} ]]; then
+  LANG=C.UTF-8
+  export LANG
 fi
 if [[ -n ${ZSH_WIN_HOME:-} ]]; then
   HOME=${ZSH_WIN_HOME//\\//}
