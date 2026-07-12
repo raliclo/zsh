@@ -81,6 +81,23 @@ test_pipe_in_quotes() {
     fi
 }
 
+# --- embedded double quotes in a -c script must reach zsh as real quoting,
+# not survive as literal " characters. When broken, the caller's escaped
+# quotes leak through so `echo "x"` prints "x" with the marks and
+# `[[ "test" == t* ]]` compares the 6-char string including quotes (never
+# matching t*). This is the Git-Bash/MSYS quote-forwarding bug: MSYS
+# escapes embedded quotes as \" and CommandLineToArgvW must be trusted to
+# unescape them (see protect_command_arg in zsh_launcher.c). ------------
+test_embedded_quotes() {
+    local out
+    out=$("$LAUNCHER" -f -c 'echo "hello world"; [[ "test" == t* ]] && echo matched' 2>&1)
+    if [[ $out == $'hello world\nmatched' ]]; then
+        pass_test "embedded double quotes in -c become real quoting, not literal chars"
+    else
+        fail_test "embedded double quotes in -c become real quoting, not literal chars" "got: ${(qq)out}"
+    fi
+}
+
 # --- bundled GNU find must win over Windows' incompatible System32 one --
 test_find_bundled() {
     local out
@@ -100,6 +117,26 @@ test_xargs_bundled() {
         pass_test "bundled xargs works"
     else
         fail_test "bundled xargs works" "got: ${(qq)out}"
+    fi
+}
+
+# --- absolute POSIX tool paths and terminal helpers must resolve inside
+# the portable package. This catches regressions where the MSYS root is
+# inferred as the parent Scoop apps directory, or terminal-state commands
+# fall through to BusyBox/Scoop shims after Ctrl-C/ZLE resets. -----------
+test_portable_usr_bin_tools() {
+    local out
+    out=$("$LAUNCHER" -f -c '
+        test -x /usr/bin/env &&
+        for tool in stty reset tset infocmp tput; do
+            command -v $tool | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || exit 10
+        done &&
+        print tools_ok
+    ' 2>&1)
+    if [[ $out == *tools_ok* ]]; then
+        pass_test "/usr/bin/env and terminal helpers resolve from the portable runtime"
+    else
+        fail_test "/usr/bin/env and terminal helpers resolve from the portable runtime" "got: ${(qq)out}"
     fi
 }
 
@@ -329,8 +366,10 @@ test_emoji_cursor_and_delete() {
 
 test_multiline_c
 test_pipe_in_quotes
+test_embedded_quotes
 test_find_bundled
 test_xargs_bundled
+test_portable_usr_bin_tools
 test_modules_load
 test_nested_zsh
 test_user_rc_forwarding

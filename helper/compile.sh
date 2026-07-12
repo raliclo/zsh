@@ -251,9 +251,6 @@ fi
         | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' | sort -u \\
         | while read -r dll; do cp \"\$dll\" bin/; done
 
-    if command -v tput.exe >/dev/null 2>&1; then
-        cp \"\$(command -v tput.exe)\" bin/
-    fi
     if [ -d /usr/share/terminfo ]; then
         mkdir -p bin/share
         cp -R /usr/share/terminfo bin/share/
@@ -261,10 +258,10 @@ fi
 
     # Bundle MSYS tools the portable runtime expects to win over Windows,
     # BusyBox, Git-for-Windows, or other sh environments on PATH. Keep this
-    # list intentionally small: common pipeline tools plus sh itself, not
-    # the whole MSYS /usr/bin directory. ps must be the MSYS/Cygwin one with
-    # -W support, not BusyBox ps.
-    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee; do
+    # list intentionally small: common pipeline tools, terminal-state tools,
+    # and sh/env, not the whole MSYS /usr/bin directory. ps must be the
+    # MSYS/Cygwin one with -W support, not BusyBox ps.
+    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee stty reset tset infocmp tput; do
         if command -v \$tool.exe >/dev/null 2>&1; then
             tool_exe=\"\$(command -v \$tool.exe)\"
             if [ \"\$tool\" = ps ] && ! \"\$tool_exe\" -W >/dev/null 2>&1; then
@@ -272,11 +269,27 @@ fi
                 continue
             fi
             cp \"\$tool_exe\" bin/
+            mkdir -p bin/usr/bin
+            cp \"\$tool_exe\" \"bin/usr/bin/\$tool.exe\"
+            case \"\$tool\" in
+                sh)
+                    mkdir -p bin/bin
+                    cp \"\$tool_exe\" bin/bin/sh.exe
+                    ;;
+            esac
             ldd \"\$tool_exe\" 2>/dev/null \\
                 | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' \\
                 | while read -r dll; do cp \"\$dll\" bin/; done
         fi
     done
+
+    # MSYS derives its POSIX root from the executable/DLL layout. Keep a copy
+    # of the real interpreter and runtime DLLs under usr/bin so absolute
+    # shebangs such as /usr/bin/env resolve inside the portable package rather
+    # than under the parent Scoop apps directory.
+    mkdir -p bin/usr/bin
+    cp bin/zsh.exe bin/usr/bin/zsh.exe
+    cp bin/*.dll bin/usr/bin/
 
     # zsh.cmd can only be run via cmd.exe's own batch-file parser, which
     # re-tokenizes the incoming command line before this script ever runs:
@@ -342,7 +355,7 @@ rem the very end of PATH. Those ship their own find/sort/more/where/... with
 rem non-POSIX behavior; left in their normal (early) position they shadow
 rem the real tools zsh expects -- e.g. Windows' find.exe instead of the GNU
 rem find bundled next to zsh.exe -- no matter what else is on PATH.
-set "PATH=%ZSH_PORTABLE_DIR%;%PATH%"
+set "PATH=%ZSH_PORTABLE_DIR%;%ZSH_PORTABLE_DIR%\usr\bin;%PATH%"
 set "_ZSH_SYS32=%SystemRoot%\System32"
 set "_ZSH_SYSWOW=%SystemRoot%\SysWOW64"
 set "_ZSH_WINDIR=%SystemRoot%"
@@ -369,7 +382,7 @@ rem first so a literal "!" in a forwarded argument survives untouched.
 rem (zsh.exe, not zsh-loader.exe: this script already does the same env setup
 rem the native launcher does, so it calls the real interpreter directly.)
 setlocal DisableDelayedExpansion
-"%ZSH_PORTABLE_DIR%\zsh.exe" %*
+"%ZSH_PORTABLE_DIR%\usr\bin\zsh.exe" %*
 set "_ZSH_EXIT=%ERRORLEVEL%"
 if defined _ZSH_ORIG_CP chcp %_ZSH_ORIG_CP% >nul
 exit /b %_ZSH_EXIT%
@@ -406,11 +419,18 @@ if [[ -o interactive ]]; then
   zsh_portable_fix_keys() {
     local zsh_portable_keymap
     for zsh_portable_keymap in main emacs viins; do
+      bindkey -M "$zsh_portable_keymap" "^M" accept-line 2>/dev/null
+      bindkey -M "$zsh_portable_keymap" "^J" accept-line 2>/dev/null
       bindkey -M "$zsh_portable_keymap" "^?" backward-delete-char 2>/dev/null
       bindkey -M "$zsh_portable_keymap" "^H" backward-delete-char 2>/dev/null
+      bindkey -M "$zsh_portable_keymap" "^[[A" up-line-or-history 2>/dev/null
+      bindkey -M "$zsh_portable_keymap" "^[[B" down-line-or-history 2>/dev/null
+      bindkey -M "$zsh_portable_keymap" "^[[C" forward-char 2>/dev/null
+      bindkey -M "$zsh_portable_keymap" "^[[D" backward-char 2>/dev/null
     done
     stty erase "^?" 2>/dev/null || stty erase "^H" 2>/dev/null
   }
+  zsh_portable_fix_keys
   precmd_functions=(${precmd_functions:#zsh_portable_fix_keys} zsh_portable_fix_keys)
 fi
 
