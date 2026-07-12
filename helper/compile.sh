@@ -97,6 +97,19 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
 # may not mean what it says.
 ZLE_PATCH="$REPO/helper/patches/windows-zle-surrogate-pairs.patch"
 ZLE_CHECKSUMS="$REPO/helper/patches/checksum.txt"
+ZLE_BACKUP="$BUILD/zle-patch-backup"
+ZLE_RESTORE_FROM_BACKUP=
+
+restore_zle_backup() {
+    if [ -n "$ZLE_RESTORE_FROM_BACKUP" ]; then
+        echo "==> Restoring Windows ZLE files from pre-patch backup..."
+        cp "$ZLE_BACKUP/Src/Zle/zle.h" "$SRC/Src/Zle/zle.h"
+        cp "$ZLE_BACKUP/Src/Zle/zle_move.c" "$SRC/Src/Zle/zle_move.c"
+        ZLE_RESTORE_FROM_BACKUP=
+    fi
+}
+trap restore_zle_backup EXIT HUP INT TERM
+
 if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
     # Comments stripped before checking: not all sha256sum implementations
     # skip '#' lines in --check mode (GNU coreutils does; some don't and
@@ -120,7 +133,16 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
         fi
     fi
     echo "==> Applying Windows ZLE surrogate-pair patch..."
+    rm -rf "$ZLE_BACKUP"
+    mkdir -p "$ZLE_BACKUP/Src/Zle"
+    cp "$SRC/Src/Zle/zle.h" "$ZLE_BACKUP/Src/Zle/zle.h"
+    cp "$SRC/Src/Zle/zle_move.c" "$ZLE_BACKUP/Src/Zle/zle_move.c"
     git -C "$SRC" apply "$ZLE_PATCH"
+    ZLE_RESTORE_FROM_BACKUP=1
+elif [ -f "$ZLE_BACKUP/Src/Zle/zle.h" ] && \
+     [ -f "$ZLE_BACKUP/Src/Zle/zle_move.c" ] && \
+     grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
+    ZLE_RESTORE_FROM_BACKUP=1
 fi
 
 # --- preconfig, configure (in build/), make ---------------------------------
@@ -237,15 +259,18 @@ fi
         cp -R /usr/share/terminfo bin/share/
     fi
 
-    # Bundle real GNU findutils binaries the portable runtime needs but
-    # doesn't build itself: find (Windows ships its own incompatible
-    # C:\\Windows\\System32\\find.exe that would otherwise shadow it --
-    # zsh.cmd's PATH reordering only helps once a real one is here to
-    # find) and xargs (Windows ships none at all, so it would simply be
-    # missing on a machine without MSYS2/Git on PATH).
-    for tool in find xargs; do
+    # Bundle MSYS tools the portable runtime expects to win over Windows,
+    # BusyBox, Git-for-Windows, or other sh environments on PATH. Keep this
+    # list intentionally small: common pipeline tools plus sh itself, not
+    # the whole MSYS /usr/bin directory. ps must be the MSYS/Cygwin one with
+    # -W support, not BusyBox ps.
+    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee; do
         if command -v \$tool.exe >/dev/null 2>&1; then
             tool_exe=\"\$(command -v \$tool.exe)\"
+            if [ \"\$tool\" = ps ] && ! \"\$tool_exe\" -W >/dev/null 2>&1; then
+                echo \"warning: skipping non-MSYS ps.exe without -W support: \$tool_exe\" >&2
+                continue
+            fi
             cp \"\$tool_exe\" bin/
             ldd \"\$tool_exe\" 2>/dev/null \\
                 | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' \\
@@ -453,9 +478,11 @@ cat "$BUILD/bin/version.txt"
 echo "==> Cleaning generated files from source tree..."
 rm -rf "$SRC/autom4te.cache"
 rm -f "$SRC/configure" "$SRC/config.h.in" "$SRC/stamp-h.in" "$SRC/META-FAQ"
+restore_zle_backup
 if [ -f "$ZLE_PATCH" ] && grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
-    echo "==> Reverting Windows ZLE surrogate-pair patch..."
-    git -C "$SRC" apply -R "$ZLE_PATCH"
+    echo "warning: Windows ZLE patch is present, but no pre-patch backup was found." >&2
+    echo "         Leaving Src/Zle/zle.h and Src/Zle/zle_move.c unchanged;" >&2
+    echo "         restore them manually before the next clean build." >&2
 fi
 
 echo "==> Build complete. Output kept in: $BUILD"
