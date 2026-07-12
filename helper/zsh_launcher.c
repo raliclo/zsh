@@ -38,6 +38,76 @@ static void die(const wchar_t *msg) {
     exit(1);
 }
 
+static wchar_t *skip_raw_token(wchar_t *p) {
+    int inquote = 0;
+    while (*p) {
+        if (*p == L'"') {
+            inquote = !inquote;
+        } else if (!inquote && (*p == L' ' || *p == L'\t')) {
+            break;
+        }
+        p++;
+    }
+    while (*p == L' ' || *p == L'\t') p++;
+    return p;
+}
+
+static wchar_t *skip_raw_argv0(wchar_t *cmdline) {
+    wchar_t *p = cmdline;
+    if (*p == L'"') {
+        p++;
+        while (*p && *p != L'"') p++;
+        if (*p == L'"') p++;
+        while (*p == L' ' || *p == L'\t') p++;
+        return p;
+    }
+    return skip_raw_token(p);
+}
+
+static int raw_token_takes_command(const wchar_t *start, const wchar_t *end) {
+    if (start >= end || *start != L'-') return 0;
+    if (start + 1 < end && start[1] == L'-') return 0;
+    for (const wchar_t *p = start + 1; p < end; p++) {
+        if (*p == L'c') return 1;
+    }
+    return 0;
+}
+
+static wchar_t *trim_outer_raw_quotes(const wchar_t *raw) {
+    while (*raw == L' ' || *raw == L'\t') raw++;
+    size_t len = wcslen(raw);
+    while (len > 0 && (raw[len - 1] == L' ' || raw[len - 1] == L'\t')) len--;
+
+    if (len >= 2 && raw[0] == L'"' && raw[len - 1] == L'"') {
+        raw++;
+        len -= 2;
+    }
+
+    wchar_t *copy = malloc((len + 1) * sizeof(wchar_t));
+    if (!copy) die(L"out of memory");
+    wmemcpy(copy, raw, len);
+    copy[len] = L'\0';
+    return copy;
+}
+
+static wchar_t *raw_command_arg(void) {
+    wchar_t *p = skip_raw_argv0(GetCommandLineW());
+    while (*p) {
+        wchar_t *start = p;
+        wchar_t *end = skip_raw_token(p);
+        const wchar_t *token_end = end;
+        while (token_end > start &&
+               (token_end[-1] == L' ' || token_end[-1] == L'\t')) {
+            token_end--;
+        }
+        if (raw_token_takes_command(start, token_end)) {
+            return *end ? trim_outer_raw_quotes(end) : NULL;
+        }
+        p = end;
+    }
+    return NULL;
+}
+
 /*
  * NOTE on the toolchain: this file must be compiled as a NATIVE Windows
  * PE binary (mingw-w64 clang, /clang64/bin/clang.exe), never with the
@@ -118,6 +188,31 @@ static wchar_t *build_child_cmdline(const wchar_t *zshExe, int argc,
         append_quoted_arg(&cmdline, &len, &cap, argv[i]);
     }
     return cmdline;
+}
+
+static int option_takes_command(const wchar_t *arg) {
+    if (arg[0] != L'-' || arg[1] == L'-') return 0;
+    for (const wchar_t *p = arg + 1; *p; p++) {
+        if (*p == L'c') return 1;
+    }
+    return 0;
+}
+
+static void protect_command_arg(int argc, wchar_t **argv) {
+    static wchar_t evalCommand[] =
+        L"eval $ZSH_LOADER_SCRIPT; _zsh_loader_status=$?; "
+        L"unset ZSH_LOADER_SCRIPT; exit $_zsh_loader_status";
+
+    for (int i = 1; i + 1 < argc; i++) {
+        if (option_takes_command(argv[i])) {
+            wchar_t *rawScript = raw_command_arg();
+            SetEnvironmentVariableW(L"ZSH_LOADER_SCRIPT",
+                                    rawScript ? rawScript : argv[i + 1]);
+            free(rawScript);
+            argv[i + 1] = evalCommand;
+            return;
+        }
+    }
 }
 
 /* Build "/cygdrive/<lower-drive-letter>/rest/of/path" from an absolute
@@ -281,6 +376,7 @@ int main(void) {
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) die(L"CommandLineToArgvW failed");
+    protect_command_arg(argc, argv);
 
     wchar_t *newCmdLine = build_child_cmdline(zshExe, argc, argv);
 
