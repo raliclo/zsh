@@ -267,42 +267,6 @@ static void to_cygdrive(const wchar_t *winpath, wchar_t *out, size_t outlen) {
     out[base] = L'\0';
 }
 
-static int from_cygdrive(const wchar_t *posix, wchar_t *out, size_t outlen) {
-    const wchar_t *p = NULL;
-    wchar_t drive = L'\0';
-    size_t base = 0;
-
-    if (wcsncmp(posix, L"/cygdrive/", 10) == 0 && posix[10] &&
-        (posix[11] == L'\0' || posix[11] == L'/')) {
-        drive = posix[10];
-        p = posix + 11;
-    } else if (posix[0] == L'/' && posix[1] &&
-               (posix[2] == L'\0' || posix[2] == L'/')) {
-        drive = posix[1];
-        p = posix + 2;
-    } else {
-        return 0;
-    }
-
-    if (!((drive >= L'a' && drive <= L'z') ||
-          (drive >= L'A' && drive <= L'Z')) || outlen < 4) {
-        return 0;
-    }
-    if (drive >= L'a' && drive <= L'z') drive -= (L'a' - L'A');
-    out[base++] = drive;
-    out[base++] = L':';
-
-    if (!*p) {
-        out[base++] = L'\\';
-    }
-    while (*p && base + 1 < outlen) {
-        out[base++] = (*p == L'/') ? L'\\' : *p;
-        p++;
-    }
-    out[base] = L'\0';
-    return *p == L'\0';
-}
-
 int main(void) {
     wchar_t exePath[MAX_PATH];
     if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) die(L"GetModuleFileNameW failed");
@@ -426,14 +390,25 @@ int main(void) {
 
     wchar_t *newCmdLine = build_child_cmdline(zshExe, argc, argv);
 
+    /* Start the child in the caller's directory. We take it from this
+     * loader's OWN inherited working directory (CreateProcess set it to the
+     * caller's cwd), not from the caller's PWD env var: an MSYS parent
+     * mangles POSIX-looking env values when spawning a native child -- e.g.
+     * PWD "/cygdrive/c/x" arrives as "C:/Users/.../git/.../cygdrive/c/x" --
+     * so PWD can't be trusted (and from_cygdrive silently rejected it,
+     * leaving ZSH_START_CWD unset and this whole handoff dead). The cwd is
+     * handed to the child both as its process working directory and, in
+     * POSIX form, via ZSH_START_CWD, which the packaged .zshenv cd's into --
+     * a belt-and-suspenders guard against the standalone-MSYS runtime
+     * resolving a fresh process's cwd unreliably. */
     wchar_t childCwd[MAX_PATH];
-    wchar_t pwd[MAX_PATH];
     wchar_t *currentDirectory = NULL;
-    if (GetEnvironmentVariableW(L"PWD", pwd, MAX_PATH) > 0 &&
-        from_cygdrive(pwd, childCwd, MAX_PATH)) {
+    DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, childCwd);
+    if (cwdLen > 0 && cwdLen < MAX_PATH) {
+        wchar_t startCwdPosix[MAX_PATH + 16];
         currentDirectory = childCwd;
-        SetEnvironmentVariableW(L"ZSH_START_CWD", pwd);
-        SetCurrentDirectoryW(childCwd);
+        to_cygdrive(childCwd, startCwdPosix, MAX_PATH + 16);
+        SetEnvironmentVariableW(L"ZSH_START_CWD", startCwdPosix);
     }
 
     STARTUPINFOW si;
