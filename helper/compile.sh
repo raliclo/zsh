@@ -261,7 +261,7 @@ fi
     # list intentionally small: common pipeline tools, terminal-state tools,
     # and sh/env, not the whole MSYS /usr/bin directory. ps must be the
     # MSYS/Cygwin one with -W support, not BusyBox ps.
-    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee ls locale stty reset tset infocmp tput; do
+    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee ls locale tar stty reset tset infocmp tput; do
         if command -v \$tool.exe >/dev/null 2>&1; then
             tool_exe=\"\$(command -v \$tool.exe)\"
             if [ \"\$tool\" = ps ] && ! \"\$tool_exe\" -W >/dev/null 2>&1; then
