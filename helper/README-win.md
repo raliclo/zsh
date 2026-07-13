@@ -59,7 +59,7 @@ Builds zsh out-of-tree so the source directory stays clean:
    interpreter), a native launcher compiled as `zsh-loader.exe`, `zsh.cmd`,
    `libzsh-*.so`/`.dll`, all dynamic modules from `config.modules`, a
    bootstrap `.zshenv`, MSYS2 runtime DLLs discovered via `ldd`, `tput.exe`,
-   bundled GNU `find`/`xargs`, and the MSYS2 terminfo database.
+   bundled GNU `find`/`xargs`/`tar`, and the MSYS2 terminfo database.
 5. Reverts the ZLE patch applied in step 1, so the source tree is clean
    again for merging upstream zsh changes.
 6. Removes autotools-generated files from the source tree
@@ -156,7 +156,8 @@ The launcher/bootstrap also:
 - prepends `build/bin` to `PATH`, then pushes `%SystemRoot%\System32`,
   `SysWOW64`, and `%SystemRoot%` itself to the very end of `PATH` — those
   ship their own `find`/`sort`/`more`/`where`/... with non-POSIX behavior
-  and would otherwise shadow the bundled GNU tools (or anything else
+  and Scoop shims can point to BusyBox tools such as `tar`; either would
+  otherwise shadow the bundled GNU tools (or anything else
   earlier on the caller's own `PATH`) no matter where they'd naturally fall;
 - sets the default interactive prompt to `username@current-path`;
 - binds both common Backspace sequences (`^?` and `^H`) in `main`, `emacs`,
@@ -189,6 +190,20 @@ since the patch's context lines (and its correctness) only make sense
 against the exact pristine source it was written against — a future
 upstream sync to either file needs the patch (and `checksum.txt`) reviewed
 and regenerated, not silently fuzzy-applied.
+
+**Caveat — the patch is not exercisable on the current Cygwin runtime.**
+It is correct for a runtime that decodes a non-BMP character into a UTF-16
+surrogate pair, but this build's Cygwin `mbrtowc` does not: typing
+🎉 (`f0 9f 8e 89`, U+1F389) into ZLE yields the two `wchar_t` values
+U+17B3 and U+FFFF, not the surrogate pair D83C/DF89, so the surrogate
+checks never match and cursor/delete still step through it wrongly. That
+corruption is below ZLE, in `mbrtowc`, and no ZLE-level change reaches it.
+BMP multibyte editing (CJK, accented Latin, etc.) decodes and edits
+correctly and is what the regression suite locks in
+(`test_multibyte_cursor_and_delete`); non-BMP/emoji line editing remains a
+known runtime limitation. The patch is kept because it is correct in
+principle and harmless (the checks are simply always false here), and helps
+on any Windows toolchain whose `mbrtowc` does produce surrogate pairs.
 
 ## Installing as a scoop app (scoop_install.sh)
 
@@ -227,10 +242,13 @@ To remove: `scoop uninstall zsh`.
 Covers the packaging-specific fixes above: the multi-line `-c` /
 metacharacter-in-quotes bugs, embedded double quotes in a `-c` script
 surviving as real quoting (the MSYS `-c` quote-forwarding bug — see "How
-`zsh-loader.exe` recovers the `-c` script"), bundled `find`/`xargs` taking
-priority over Windows' own, dynamic module loading, nested-session module
-loading and user-rc forwarding, `PATH` ordering, and (best-effort — see the
-comment in the script) the ZLE surrogate-pair cursor/delete fix. Must be run
+`zsh-loader.exe` recovers the `-c` script"), bundled `find`/`xargs`/`tar`
+taking priority over Windows'/BusyBox' own, a child inheriting the caller's
+working directory at startup, UTF-8 filenames round-tripping through `ls`,
+dynamic module loading, nested-session module loading and user-rc
+forwarding, `PATH` ordering, `ps`'s `WINPID` column being a real Windows
+PID, and multibyte (BMP) ZLE cursor movement / deletion treating a
+character as one editing unit. Run it with `run_all_tests.bat`, or directly
 through the build's own **launcher** (`zsh-loader.exe`, not the bare
 `zsh.exe` — see the environment-loss item under "Known limitations"), since
 it needs `zsh/zpty` and is testing that build specifically, and the
@@ -238,6 +256,8 @@ it needs `zsh/zpty` and is testing that build specifically, and the
 "Known limitations" for why:
 
 ```sh
+helper\test\run_all_tests.bat            # runs every helper/test/*.zsh, sets exit code
+# or a single suite directly:
 build/bin/zsh-loader.exe -f helper/test/test_windows_packaging.zsh "$(pwd)/build/bin"
 ```
 
