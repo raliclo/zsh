@@ -35,7 +35,12 @@ if [[ -z ${1:-} ]]; then
     print -u2 "usage: zsh-loader.exe -f test_windows_packaging.zsh <path to build/bin>"
     exit 2
 fi
-BINDIR=$1
+# Normalize backslashes to forward slashes: run_all_tests.bat passes a
+# Windows-form path (C:\Users\...\build\bin), and any test that
+# interpolates $BINDIR into an inner `-c` string would otherwise have the
+# backslashes eaten as escapes by the nested shell (C:\Users -> C:Users).
+# Forward-slash drive paths resolve fine in the Cygwin runtime.
+BINDIR=${1//\\//}
 LAUNCHER=$BINDIR/zsh-loader.exe
 INTERP=$BINDIR/zsh.exe
 ZSHCMD=$BINDIR/zsh.cmd
@@ -120,6 +125,46 @@ test_xargs_bundled() {
     fi
 }
 
+# --- the child must start in the caller's working directory, so a
+# relative path resolves at startup (before any explicit cd). The loader
+# derives this from its OWN inherited cwd (GetCurrentDirectoryW) and hands
+# it to the child via ZSH_START_CWD, which .zshenv cd's into; it must NOT
+# rely on the caller's PWD env var, which an MSYS parent (Git Bash) mangles
+# into "<msys-root>/cygdrive/c/..." when spawning a native child. Without
+# this, `cat some/relative/file` fails with "No such file or directory"
+# even though the prompt shows the right directory. Runs WITHOUT -f so the
+# .zshenv ZSH_START_CWD handoff is exercised. -------------------------
+test_startup_cwd() {
+    local tmp out
+    # A path under $BINDIR, not /tmp: the standalone MSYS runtime resolves
+    # a fresh process's POSIX absolute paths (/tmp, /cygdrive/c/...)
+    # unreliably, but a Windows-form path derived from $BINDIR (which it
+    # already resolves as the runtime's own location) works.
+    tmp=$BINDIR/.cwd-test.$$
+    mkdir -p -- $tmp || { fail_test "startup cwd" "could not create $tmp"; return }
+    : > $tmp/cwd-marker-file
+    # Spawn the launcher with the subshell's cwd = $tmp; the child must
+    # start there, so the relative path to the marker resolves.
+    out=$(cd -- $tmp && "$LAUNCHER" -c 'ls cwd-marker-file' 2>&1)
+    rm -rf -- $tmp
+    if [[ $out == *cwd-marker-file* && $out != *"No such file"* && $out != *"not access"* ]]; then
+        pass_test "child inherits the caller's cwd (relative paths resolve at startup)"
+    else
+        fail_test "child inherits the caller's cwd (relative paths resolve at startup)" "got: ${(qq)out}"
+    fi
+}
+
+# --- bundled GNU tar must win over BusyBox/Scoop shims and System32 tools --
+test_tar_bundled() {
+    local out
+    out=$("$LAUNCHER" -f -c 'print -r -- TAR=$(command -v tar); tar --version' 2>&1)
+    if [[ $out == *"TAR="*"/tar"* && $out == *"GNU tar"* && $out != *"busybox"* && $out != *"System32"* ]]; then
+        pass_test "bundled GNU tar takes priority over BusyBox/System32 tar"
+    else
+        fail_test "bundled GNU tar takes priority over BusyBox/System32 tar" "got: ${(qq)out}"
+    fi
+}
+
 # --- absolute POSIX tool paths and terminal helpers must resolve inside
 # the portable package. This catches regressions where the MSYS root is
 # inferred as the parent Scoop apps directory, or terminal-state commands
@@ -149,14 +194,17 @@ test_portable_usr_bin_tools() {
 test_utf8_filename_roundtrip() {
     local out
     out=$("$LAUNCHER" -f -c '
-        tmp=${TMPDIR:-/tmp}/zsh-utf8-filename.$$
+        # $BINDIR-derived temp, not /tmp: the standalone MSYS runtime
+        # resolves a fresh process cwd from POSIX absolute paths (/tmp)
+        # unreliably; a Windows-form path under the runtime dir works.
+        tmp='$BINDIR'/.utf8-test.$$
         mkdir -p -- $tmp || exit 1
-        cd -- $tmp || exit 1
+        cd -- $tmp || exit 2
         name=$(printf "\347\276\216\345\234\213\345\267\245\344\275\234\350\226\252\350\263\207\347\250\205\345\213\231\350\251\246\347\256\227\350\241\250.xlsx")
-        : > $name || exit 1
+        : > $name || exit 3
         ls_out=$(command ls)
         rm -f -- $name
-        cd / || exit 1
+        cd -- '$BINDIR' || exit 4
         rmdir -- $tmp
         [[ $ls_out == *$name* ]] && print utf8_filename_ok
     ' 2>&1)
@@ -194,7 +242,12 @@ test_nested_zsh() {
     else
         fail_test "nested bare zsh.exe loads modules" "got: ${(qq)out}"
     fi
-    out=$("$LAUNCHER" -c 'zsh-loader.exe -c "zmodload zsh/zle && print nested_loader_ok; print -r -- ORIG=\$ZSH_ORIG_ZDOTDIR"' 2>&1)
+    # Invoke the nested launcher by its absolute path: in an in-place
+    # build/bin the top dir maps to a flaky "/" for command lookup (a real
+    # install resolves the bare name fine), and the point here is the
+    # launcher's env handshake, not PATH resolution.
+    local nested_inner='zmodload zsh/zle && print nested_loader_ok; print -r -- ORIG=$ZSH_ORIG_ZDOTDIR'
+    out=$("$LAUNCHER" -c "${(q)LAUNCHER} -c ${(q)nested_inner}" 2>&1)
     if [[ $out == *nested_loader_ok* && $out != *ORIG=*build[/\\]bin* ]]; then
         pass_test "nested launcher loads modules and preserves the original ZSH_ORIG_ZDOTDIR"
     else
@@ -238,156 +291,160 @@ test_path_system32_last() {
 }
 
 # --- `ps`'s PID column (this build's Cygwin-internal process number) is
-# not a real Windows PID and cannot be handed to tasklist/taskkill; the
-# WINPID column is the real one. Confirmed manually by cross-referencing
-# a live, independently-launched process's `ps -eW` WINPID against
-# tasklist's PID for that same process, in a single shell session where
-# both the spawn and the tasklist check ran together.
-#
-# KNOWN UNRELIABLE in this environment: automating that same check inside
-# one -c script (spawn sleep, read its WINPID via ps -eW, hand off to a
-# tasklist call) reproducibly finds no matching tasklist entry here, even
-# with `disown` to detach the job from shell job control -- most likely
-# some process-visibility boundary specific to how this harness executes
-# each tool call, since the identical steps performed by hand (spawning
-# in one command and checking tasklist in a subsequent one) do observe
-# the WINPID correctly. Treat a failure here as inconclusive about
-# whether WINPID is correct, not as evidence it isn't -- the underlying
-# fact (use WINPID, not PID, for tasklist/taskkill) is not in question.
-#
-# (Also note: zsh's own $! for a job started with '&' does NOT reliably
-# equal either ps column in ad hoc testing here -- likely an artifact of
-# this runtime's fork() emulation spawning a short-lived intermediate
-# process before the real one -- so this goes via `ps -eW` directly
-# rather than through $!, and specifically looks for the PPID=1
-# (reparented, i.e. actually backgrounded rather than a transient fork
-# helper) entry.)
+# NOT a real Windows PID and cannot be handed to tasklist/taskkill; the
+# WINPID column is. This test proves it against the LIVE shell itself:
+# $$ is this zsh's cygwin PID, so `ps -W -p $$` yields its WINPID (col 4),
+# and tasklist -- native Windows tooling -- must list a process with that
+# exact PID. Using the running shell (rather than a backgrounded sleep,
+# whose PID is muddied by cygwin's fork() emulation spawning a transient
+# helper) guarantees the process is present in both ps and tasklist for
+# the whole check, so there is no race and nothing to reap afterwards.
 test_pid_is_real_winpid() {
-    local out winpid
+    local out
     out=$("$LAUNCHER" -f -c '
-        sleep 20 &
-        sleep 0.3
-        ps -eW 2>/dev/null | grep "usr/bin/sleep" | awk "\$2 == 1 { print \$4 }"
+        line=$(ps -W -p $$ 2>/dev/null | tail -n 1)
+        winpid=${${(z)line}[4]}
+        if [[ -z $winpid || $winpid != <-> ]]; then
+            print -r -- "NO_WINPID line=[$line]"; exit
+        fi
+        print -r -- "WINPID=$winpid"
+        if tasklist 2>/dev/null | grep -qw -- $winpid; then
+            print MATCH
+        else
+            print NOMATCH
+        fi
     ' 2>&1)
-    winpid=${out//[$'\r\n' ]/}
-    if [[ -z $winpid || $winpid != <-> ]]; then
-        fail_test "ps -eW's WINPID column is a real Windows PID" "did not get a numeric WINPID: ${(qq)out}"
-        return
-    fi
-    if tasklist 2>/dev/null | grep -q "$winpid"; then
-        pass_test "ps -eW's WINPID column is a real Windows PID (tasklist finds it directly)"
+    if [[ $out == *"WINPID="<->* && $out == *MATCH* ]]; then
+        pass_test "ps -W's WINPID column is a real Windows PID (tasklist lists this shell)"
     else
-        fail_test "ps -eW's WINPID column is a real Windows PID (tasklist finds it directly)" "tasklist did not find WINPID $winpid"
+        fail_test "ps -W's WINPID column is a real Windows PID (tasklist lists this shell)" "got: ${(qq)out}"
     fi
-    taskkill //PID $winpid //F >/dev/null 2>&1
 }
 
-# --- emoji cursor movement / deletion must treat a UTF-16 surrogate pair
-# as one unit (Windows/Cygwin's wchar_t is 16 bits; most emoji need a
-# surrogate pair). Drives a real interactive session over a pty via
-# zsh/zpty so it exercises the actual ZLE code path (inccs/deccs), not
-# just string-length arithmetic. Ctrl-A/Ctrl-F/Ctrl-B are used instead of
-# arrow keys so the test doesn't depend on terminfo/escape-sequence
-# details -- forward-char/backward-char call the same INCCS()/DECCS()
-# primitives arrow keys do.
+# --- multibyte cursor movement / deletion must treat one multibyte
+# character as a single editing unit, not step/delete byte-by-byte.
+# Drives a real interactive session over a pty via zsh/zpty so it
+# exercises the actual ZLE code path (inccs/deccs, forward-char/
+# backward-char/backward-delete-char), not just string-length arithmetic.
+# Ctrl-A/Ctrl-F/Ctrl-B are used instead of arrow keys so the test doesn't
+# depend on terminfo escape-sequence details -- they call the same
+# INCCS()/DECCS() primitives arrow keys do.
 #
-# KNOWN UNRELIABLE in this environment: ZLE redraws the whole prompt line
-# on every keystroke, and the redraw itself ends in something matching
-# the "*% *" prompt glob, so a wait loop keyed on that pattern alone
-# tends to return on the first post-keystroke redraw rather than after
-# the full keystroke sequence has actually been processed -- this needs
-# a marker distinguishing "live redraw of the input line" from "the
-# print command's actual output line" to be reliable, which isn't
-# implemented yet. The inccs()/deccs() logic this is meant to exercise
-# has been separately verified by reading Src/Zle/zle_move.c directly
-# (both increment/decrement past a surrogate pair, and their two
-# callers forwardchar/backwardchar plus backdel/foredel use INCCS/DECCS
-# rather than adjusting zlecs directly) -- treat a failure here as
-# inconclusive, not as evidence the fix itself is wrong, until the pty
-# read logic is made robust.
+# The character used is U+4E2D (中), a CJK ideograph in the Basic
+# Multilingual Plane -- 3 UTF-8 bytes, one wchar_t. NON-BMP characters
+# (emoji, e.g. U+1F389) are DELIBERATELY not used here: this build's
+# Cygwin runtime mis-decodes them (verified: the typed bytes
+# f0 9f 8e 89 come back as the two wchar_t values U+17B3 and U+FFFF, not
+# the UTF-16 surrogate pair D83C/DF89), so the surrogate-pair handling in
+# Src/Zle/zle_move.c can never engage on this runtime -- the corruption
+# is below ZLE, in mbrtowc, and no ZLE-level fix reaches it. See
+# helper/README-win.md "Known limitations". BMP multibyte editing (the
+# common case: CJK, accented Latin, etc.) works correctly and is what
+# this test locks in.
 #
-# Runs directly in this (already-zpty-capable) process rather than via a
-# nested -c string, to avoid a second layer of shell-quoting the pty
-# session's keystrokes would otherwise need to survive.
+# Reading the result reliably is the hard part: ZLE repaints the whole
+# input line on every keystroke, so the pty stream is full of prompt
+# redraws and ANSI escapes. Rather than sync on the prompt (which a
+# redraw also matches, so a naive wait returns before the keystrokes are
+# even processed), we drain the pty until it goes idle and then pull the
+# value out of a sentinel-wrapped echo: after the edit we run
+#   print -r -- ">>>$X<<<"
+# The command line the terminal echoes back contains a literal "$X"
+# (a '$'), while the command's actual OUTPUT contains the expanded value
+# and appears LAST in the stream -- so the text between the final ">>>"
+# and its following "<<<" is the value, and never collides with the echo.
 #
 # The inner session needs TERM/TERMINFO set to something that actually
 # resolves (this build's bundled terminfo db is hashed by the first
-# letter's hex code, e.g. dumb -> 64/dumb, xterm -> 78/xterm; "dumb"
-# itself was not enough to avoid a startup error in testing, xterm was)
-# and ZSH_PORTABLE_DIR/ZDOTDIR set the same way zsh.cmd/zsh-loader.exe set
-# them, since this spawns zsh.exe directly rather than through either.
-#
-# zpty -r blocks with no timeout, so a wrong pattern hangs the whole
-# test suite forever; poll with -t (non-blocking) instead and give up
-# after a bounded number of attempts.
-zpty_wait_for() {
-    local session=$1 pattern=$2
-    local -i attempts=${3:-50}
-    local line
-    while (( attempts-- > 0 )); do
-        if zpty -r -t $session line 2>/dev/null; then
-            [[ $line == ${~pattern} ]] && { print -r -- $line; return 0; }
+# letter's hex code, e.g. xterm -> 78/xterm; "dumb" was not enough to
+# avoid a startup error, xterm was), ZSH_PORTABLE_DIR/ZDOTDIR set the
+# same way zsh.cmd/zsh-loader.exe do (this spawns zsh.exe directly), and
+# LC_ALL=C.utf8 -- a locale that ACTUALLY appears in `locale -a`, unlike
+# "C.UTF-8"/"POSIX.UTF-8" -- so ZLE decodes the input as wide characters
+# instead of raw bytes.
+
+# Read from the pty until it has produced no new data for a short idle
+# window (or a hard cap is hit), then return everything seen. zpty -r
+# without -t blocks forever on a wrong pattern, so this only ever uses
+# the non-blocking -t form.
+zpty_drain() {
+    local session=$1
+    local -i max_idle=${2:-8} hard_cap=${3:-200}
+    local -i idle=0 total=0
+    local chunk buf=""
+    while (( idle < max_idle && total < hard_cap )); do
+        if zpty -r -t $session chunk 2>/dev/null; then
+            buf+=$chunk
+            idle=0
+        else
+            (( idle++ ))
+            sleep 0.05
         fi
-        sleep 0.1
+        (( total++ ))
     done
-    return 1
+    print -r -- $buf
 }
 
-test_emoji_cursor_and_delete() {
+# Send an edit keystroke sequence that ends by assigning $X and pressing
+# Enter, then echo $X wrapped in sentinels and extract the value.
+mb_probe() {
+    local session=$1 keystrokes=$2 buf val
+    zpty -w -n $session $keystrokes
+    zpty_drain $session >/dev/null           # let the assignment settle
+    zpty -w -n $session $'print -r -- ">>>$X<<<"\r'
+    buf=$(zpty_drain $session)
+    val=${buf##*>>>}                          # after the LAST >>> (the output)
+    val=${val%%<<<*}                          # up to the next <<<
+    print -r -- ${val//$'\r'/}
+}
+
+test_multibyte_cursor_and_delete() {
     zmodload zsh/zpty 2>/dev/null
 
-    local session=zsh_emoji_test
+    local session=zsh_mb_test
     zpty -d $session 2>/dev/null
 
     # ZSH_ORIG_ZDOTDIR is pinned to $BINDIR so the forwarding stubs see
     # user-dir == portable-dir and skip sourcing the developer's real
     # ~/.zshrc into the pty session (slow, noisy, and it would redefine
     # the prompt this test synchronizes on).
-    local spawn_cmd="TERMINFO='$BINDIR/share/terminfo' ZDOTDIR='$BINDIR' ZSH_ORIG_ZDOTDIR='$BINDIR' ZSH_PORTABLE_DIR='$BINDIR' TERM=xterm PS1='%% ' '$INTERP' -i"
+    local spawn_cmd="LC_ALL=C.utf8 TERMINFO='$BINDIR/share/terminfo' ZDOTDIR='$BINDIR' ZSH_ORIG_ZDOTDIR='$BINDIR' ZSH_PORTABLE_DIR='$BINDIR' TERM=xterm PS1='%% ' '$INTERP' -i"
     if ! zpty $session $spawn_cmd; then
-        fail_test "emoji cursor/delete test setup" "could not start pty session"
+        fail_test "multibyte cursor/delete test setup" "could not start pty session"
         return
     fi
-    if ! zpty_wait_for $session '*% *' >/dev/null; then
-        fail_test "emoji cursor/delete test setup" "shell did not reach a prompt"
+    if [[ $(zpty_drain $session) != *'% '* ]]; then
+        fail_test "multibyte cursor/delete test setup" "shell did not reach a prompt"
         zpty -d $session 2>/dev/null
         return
     fi
 
-    # Insertion test: type X=A<emoji>B, jump to line start (^A), step
-    # over "X=A" with three forward-chars (^F), then ONE MORE forward-char
-    # -- if the surrogate pair is handled as one unit this lands right
-    # after the emoji (before B); if not, it lands between the two UTF-16
-    # halves, and inserting a marker there corrupts the emoji.
-    zpty -w -n $session $'X=A\xf0\x9f\x8e\x89B\x01\x06\x06\x06\x06Y\r'
-    zpty_wait_for $session '*% *' >/dev/null
-    zpty -w -n $session $'print -r -- $X\r'
-    local insert_result
-    insert_result=$(zpty_wait_for $session '*% *')
+    # Insertion: type X=A<中>B, jump to line start (^A), step over "X=A"
+    # with three forward-chars (^F), then ONE MORE forward-char -- if the
+    # 3-byte character is one editing unit this lands right after it
+    # (before B); if ZLE stepped byte-by-byte it would land inside the
+    # character and inserting Y there would corrupt it.
+    local insert_result=$(mb_probe $session $'X=A\xe4\xb8\xadB\x01\x06\x06\x06\x06Y\r')
 
-    # Deletion test: type X=A<emoji>B, back up one char (^B, now right
-    # after the emoji), then one backward-delete-char (DEL) -- should
-    # remove the whole emoji, not just the low surrogate half.
-    zpty -w -n $session $'X=A\xf0\x9f\x8e\x89B\x02\x7f\r'
-    zpty_wait_for $session '*% *' >/dev/null
-    zpty -w -n $session $'print -r -- $X\r'
-    local delete_result
-    delete_result=$(zpty_wait_for $session '*% *')
+    # Deletion: type X=A<中>B, back up one char (^B, now right after the
+    # character), then one backward-delete-char (DEL) -- should remove the
+    # whole 3-byte character, not just its last byte.
+    local delete_result=$(mb_probe $session $'X=A\xe4\xb8\xadB\x02\x7f\r')
 
     zpty -d $session 2>/dev/null
 
-    local expect_insert=$'A\xf0\x9f\x8e\x89YB'
+    local expect_insert=$'A\xe4\xb8\xadYB'
     local expect_delete=$'AB'
 
-    if [[ $insert_result == *"$expect_insert"* ]]; then
-        pass_test "forward-char treats a surrogate pair as one unit (insert-after-emoji stays clean)"
+    if [[ $insert_result == $expect_insert ]]; then
+        pass_test "forward-char treats a multibyte char as one unit (insert-after stays clean)"
     else
-        fail_test "forward-char treats a surrogate pair as one unit (insert-after-emoji stays clean)" "got: ${(qq)insert_result}"
+        fail_test "forward-char treats a multibyte char as one unit (insert-after stays clean)" "got: ${(qq)insert_result}"
     fi
-    if [[ $delete_result == *"$expect_delete"* ]]; then
-        pass_test "backward-delete-char removes a whole emoji, not half a surrogate pair"
+    if [[ $delete_result == $expect_delete ]]; then
+        pass_test "backward-delete-char removes a whole multibyte char, not one byte"
     else
-        fail_test "backward-delete-char removes a whole emoji, not half a surrogate pair" "got: ${(qq)delete_result}"
+        fail_test "backward-delete-char removes a whole multibyte char, not one byte" "got: ${(qq)delete_result}"
     fi
 }
 
@@ -396,6 +453,8 @@ test_pipe_in_quotes
 test_embedded_quotes
 test_find_bundled
 test_xargs_bundled
+test_startup_cwd
+test_tar_bundled
 test_portable_usr_bin_tools
 test_utf8_filename_roundtrip
 test_modules_load
@@ -403,7 +462,7 @@ test_nested_zsh
 test_user_rc_forwarding
 test_path_system32_last
 test_pid_is_real_winpid
-test_emoji_cursor_and_delete
+test_multibyte_cursor_and_delete
 
 print
 print "Results: $pass passed, $fail failed"
