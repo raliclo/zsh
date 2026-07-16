@@ -185,6 +185,21 @@ test_portable_usr_bin_tools() {
     fi
 }
 
+# --- default helper for killing Windows PIDs. MSYS `kill` takes the
+# internal Cygwin/MSYS PID column, not `ps -eW`'s WINPID column, so the
+# portable environment exposes safe taskkill wrappers and killwin. ------
+test_killwin_helper() {
+    local out
+    out=$("$LAUNCHER" -c 'whence -w taskkill taskkill.exe killwin; functions taskkill taskkill.exe killwin' 2>&1)
+    if [[ $out == *"taskkill: function"* && $out == *"taskkill.exe: function"* &&
+          $out == *"MSYS2_ARG_CONV_EXCL"* && $out == *"command taskkill.exe"* &&
+          $out == *"killwin: function"* && $out == *"taskkill /PID"* && $out == *"/F"* ]]; then
+        pass_test "taskkill/taskkill.exe and killwin bypass MSYS option-to-path conversion"
+    else
+        fail_test "taskkill/taskkill.exe and killwin bypass MSYS option-to-path conversion" "got: ${(qq)out}"
+    fi
+}
+
 # --- Windows Unicode filenames must round-trip through zsh as UTF-8.
 # Without LC_CTYPE=UTF-8 before the MSYS runtime starts, names such as
 # Chinese .xlsx files can be decoded through a legacy code page and show
@@ -431,10 +446,18 @@ test_multibyte_cursor_and_delete() {
     # whole 3-byte character, not just its last byte.
     local delete_result=$(mb_probe $session $'X=A\xe4\xb8\xadB\x02\x7f\r')
 
+    # Terminals wrap pasted text in bracketed-paste markers. Keep those
+    # markers bound after user keymap changes so a fast paste is inserted
+    # literally instead of being interpreted as editing commands.
+    zpty -w -n $session $'bindkey -M emacs "^[[200~" self-insert\r'
+    zpty_drain $session >/dev/null
+    local paste_result=$(mb_probe $session $'X=\e[200~git@github.com:raliclo/zsh.git\e[201~\r')
+
     zpty -d $session 2>/dev/null
 
     local expect_insert=$'A\xe4\xb8\xadYB'
     local expect_delete=$'AB'
+    local expect_paste='git@github.com:raliclo/zsh.git'
 
     if [[ $insert_result == $expect_insert ]]; then
         pass_test "forward-char treats a multibyte char as one unit (insert-after stays clean)"
@@ -446,6 +469,11 @@ test_multibyte_cursor_and_delete() {
     else
         fail_test "backward-delete-char removes a whole multibyte char, not one byte" "got: ${(qq)delete_result}"
     fi
+    if [[ $paste_result == $expect_paste ]]; then
+        pass_test "bracketed paste preserves a Git SSH URL exactly"
+    else
+        fail_test "bracketed paste preserves a Git SSH URL exactly" "got: ${(qq)paste_result}"
+    fi
 }
 
 test_multiline_c
@@ -456,6 +484,7 @@ test_xargs_bundled
 test_startup_cwd
 test_tar_bundled
 test_portable_usr_bin_tools
+test_killwin_helper
 test_utf8_filename_roundtrip
 test_modules_load
 test_nested_zsh
