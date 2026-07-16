@@ -160,10 +160,19 @@ The launcher/bootstrap also:
   otherwise shadow the bundled GNU tools (or anything else
   earlier on the caller's own `PATH`) no matter where they'd naturally fall;
 - sets the default interactive prompt to `username@current-path`;
+- defines `taskkill` and `taskkill.exe` wrappers that disable MSYS argument
+  conversion only for that native Windows command, so normal options such as
+  `/PID` and `/F` are not rewritten as POSIX paths;
+- defines `killwin WINPID [...]`, a convenience wrapper around
+  `taskkill /PID <WINPID> /F`; use it with the `WINPID` column from
+  `ps -eW`, since zsh/MSYS `kill` expects the separate internal PID column;
 - binds both common Backspace sequences (`^?` and `^H`) in `main`, `emacs`,
   and `viins` keymaps. If Backspace still behaves exactly like Tab, the
   terminal is likely sending literal `^I`, which must be fixed in the
-  terminal profile/keybinding.
+  terminal profile/keybinding;
+- restores the standard bracketed-paste binding (`ESC [ 200 ~`) in those
+  keymaps before every prompt, so pasted text such as a Git SSH URL reaches
+  ZLE as one literal insertion even when user startup code replaces keymaps.
 
 Note: `make install` into the MSYS2 prefix currently fails at
 `install.modules` (a `rlimits` module link error against static libc on
