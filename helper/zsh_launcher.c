@@ -369,18 +369,25 @@ int main(void) {
     }
     SetEnvironmentVariableW(L"TERMINFO", terminfoPath);
 
-    /* MSYS uses the process locale for multibyte filename conversion. Keep
-     * LC_CTYPE UTF-8 so Windows Unicode filenames round-trip through zsh. */
-    SetEnvironmentVariableW(L"LC_CTYPE", L"C.UTF-8");
+    /* Cygwin uses the process locale for multibyte (Unicode filename, ZLE
+     * line-editing) conversion. The name MUST be one Cygwin actually has --
+     * "C.utf8" as it appears in `locale -a`, NOT "C.UTF-8": the dashed/
+     * uppercase spelling is not a real locale here and is mis-handled
+     * (mbrtowc decodes inconsistently), which puts ZLE into multibyte mode
+     * with unreliable decoding and desyncs the cursor from the display, so
+     * even plain ASCII line editing gets scrambled. */
+    SetEnvironmentVariableW(L"LC_CTYPE", L"C.utf8");
     if (GetEnvironmentVariableW(L"LANG", NULL, 0) == 0) {
-        SetEnvironmentVariableW(L"LANG", L"C.UTF-8");
+        SetEnvironmentVariableW(L"LANG", L"C.utf8");
     }
 
-    /* --- Console code page: switch to UTF-8, restore on exit --- */
+    /* --- Console OUTPUT code page: switch to UTF-8, restore on exit.
+     * Deliberately NOT SetConsoleCP() (the INPUT code page): Cygwin reads
+     * console input as wide characters and decodes via the locale above,
+     * so forcing the Win32 input code page to 65001 is unnecessary and
+     * corrupts interactive input (dropped/duplicated/reordered keys). */
     UINT origOutCP = GetConsoleOutputCP();
-    UINT origInCP = GetConsoleCP();
     SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
 
     /* --- Forward the launcher's argv to zsh.exe ---------------------- */
     int argc = 0;
@@ -433,7 +440,6 @@ int main(void) {
     LocalFree(argv);
 
     SetConsoleOutputCP(origOutCP);
-    SetConsoleCP(origInCP);
 
     return (int)exitCode;
 }
