@@ -339,8 +339,10 @@ set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%/share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"
 set "TERMINFO=/cygdrive/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
-set "LC_CTYPE=C.UTF-8"
-if not defined LANG set "LANG=C.UTF-8"
+rem "C.utf8" (as in `locale -a`), NOT "C.UTF-8": the dashed spelling is
+rem not a real Cygwin locale and is mis-decoded, which scrambles ZLE input.
+set "LC_CTYPE=C.utf8"
+if not defined LANG set "LANG=C.utf8"
 
 rem Switch the console to UTF-8 (65001) so zsh's UTF-8 output and typed
 rem multibyte input round-trip correctly; without this, a console left on
@@ -408,10 +410,17 @@ if [[ -n $zsh_portable_dir ]]; then
   TERMINFO="$zsh_portable_dir/share/terminfo"
   export TERMINFO
 fi
-LC_CTYPE=C.UTF-8
+# "C.utf8" (as it appears in `locale -a`), NOT "C.UTF-8": the dashed/
+# uppercase spelling is not a real Cygwin locale here and is mis-decoded
+# (mbrtowc is inconsistent), which puts ZLE into multibyte mode with
+# unreliable decoding and desyncs the cursor from the display -- even
+# plain ASCII line editing gets scrambled. This runs on every session
+# (via the .zshenv forwarding stub), so it, not the launcher's setting,
+# is what the interactive shell ends up with.
+LC_CTYPE=C.utf8
 export LC_CTYPE
 if [[ -z ${LANG:-} ]]; then
-  LANG=C.UTF-8
+  LANG=C.utf8
   export LANG
 fi
 if [[ -n ${ZSH_WIN_HOME:-} ]]; then
@@ -422,6 +431,28 @@ if [[ -n ${ZSH_START_CWD:-} && -d ${ZSH_START_CWD:-} ]]; then
   cd -- ${ZSH_START_CWD:-} 2>/dev/null || true
   unset ZSH_START_CWD
 fi
+function taskkill.exe {
+  MSYS2_ARG_CONV_EXCL='*' command taskkill.exe "$@"
+}
+taskkill() {
+  taskkill.exe "$@"
+}
+killwin() {
+  if (( $# == 0 )); then
+    print -u2 "usage: killwin WINPID [...]"
+    return 2
+  fi
+  local zsh_portable_pid zsh_portable_status=0
+  for zsh_portable_pid in "$@"; do
+    if [[ $zsh_portable_pid != <-> ]]; then
+      print -u2 "killwin: invalid WINPID: $zsh_portable_pid"
+      zsh_portable_status=2
+      continue
+    fi
+    taskkill /PID "$zsh_portable_pid" /F || zsh_portable_status=$?
+  done
+  return $zsh_portable_status
+}
 if [[ -o interactive ]]; then
   PROMPT="%n@%~%# "
   zsh_portable_fix_keys() {
@@ -435,6 +466,7 @@ if [[ -o interactive ]]; then
       bindkey -M "$zsh_portable_keymap" "^[[B" down-line-or-history 2>/dev/null
       bindkey -M "$zsh_portable_keymap" "^[[C" forward-char 2>/dev/null
       bindkey -M "$zsh_portable_keymap" "^[[D" backward-char 2>/dev/null
+      bindkey -M "$zsh_portable_keymap" "^[[200~" bracketed-paste 2>/dev/null
     done
     stty erase "^?" 2>/dev/null || stty erase "^H" 2>/dev/null
   }
@@ -488,6 +520,9 @@ if [[ -n \${ZSH_ORIG_ZDOTDIR:-} ]]; then
     source \$zsh_portable_user_zdotdir/$rc
     ZDOTDIR=\${ZSH_PORTABLE_DIR:-\$zsh_portable_user_zdotdir}
     export ZDOTDIR
+  fi
+  if (( \$+functions[zsh_portable_fix_keys] )); then
+    zsh_portable_fix_keys
   fi
   unset zsh_portable_user_zdotdir
 fi
