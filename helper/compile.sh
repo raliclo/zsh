@@ -437,6 +437,12 @@ function taskkill.exe {
 taskkill() {
   taskkill.exe "$@"
 }
+function wsl.exe {
+  MSYS2_ARG_CONV_EXCL='*' command wsl.exe "$@"
+}
+wsl() {
+  wsl.exe "$@"
+}
 killwin() {
   if (( $# == 0 )); then
     print -u2 "usage: killwin WINPID [...]"
