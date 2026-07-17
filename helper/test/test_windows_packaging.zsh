@@ -185,18 +185,22 @@ test_portable_usr_bin_tools() {
     fi
 }
 
-# --- default helper for killing Windows PIDs. MSYS `kill` takes the
+# --- default Windows executable wrappers. MSYS `kill` takes the
 # internal Cygwin/MSYS PID column, not `ps -eW`'s WINPID column, so the
-# portable environment exposes safe taskkill wrappers and killwin. ------
-test_killwin_helper() {
+# portable environment exposes safe taskkill wrappers and killwin.
+# `wsl.exe` also needs conversion disabled so /mnt/c/... and --cd paths
+# are passed to WSL unchanged instead of being rewritten by MSYS. -------
+test_windows_exe_wrappers() {
     local out
-    out=$("$LAUNCHER" -c 'whence -w taskkill taskkill.exe killwin; functions taskkill taskkill.exe killwin' 2>&1)
+    out=$("$LAUNCHER" -c 'whence -w taskkill taskkill.exe killwin wsl wsl.exe; functions taskkill taskkill.exe killwin wsl wsl.exe' 2>&1)
     if [[ $out == *"taskkill: function"* && $out == *"taskkill.exe: function"* &&
           $out == *"MSYS2_ARG_CONV_EXCL"* && $out == *"command taskkill.exe"* &&
-          $out == *"killwin: function"* && $out == *"taskkill /PID"* && $out == *"/F"* ]]; then
-        pass_test "taskkill/taskkill.exe and killwin bypass MSYS option-to-path conversion"
+          $out == *"killwin: function"* && $out == *"taskkill /PID"* && $out == *"/F"* &&
+          $out == *"wsl: function"* && $out == *"wsl.exe: function"* &&
+          $out == *"command wsl.exe"* ]]; then
+        pass_test "Windows executable wrappers bypass MSYS option-to-path conversion"
     else
-        fail_test "taskkill/taskkill.exe and killwin bypass MSYS option-to-path conversion" "got: ${(qq)out}"
+        fail_test "Windows executable wrappers bypass MSYS option-to-path conversion" "got: ${(qq)out}"
     fi
 }
 
@@ -484,7 +488,7 @@ test_xargs_bundled
 test_startup_cwd
 test_tar_bundled
 test_portable_usr_bin_tools
-test_killwin_helper
+test_windows_exe_wrappers
 test_utf8_filename_roundtrip
 test_modules_load
 test_nested_zsh

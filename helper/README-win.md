@@ -163,6 +163,9 @@ The launcher/bootstrap also:
 - defines `taskkill` and `taskkill.exe` wrappers that disable MSYS argument
   conversion only for that native Windows command, so normal options such as
   `/PID` and `/F` are not rewritten as POSIX paths;
+- defines `wsl` and `wsl.exe` wrappers that disable MSYS argument conversion
+  only for that native Windows command, so WSL paths such as `/mnt/c/...` and
+  native options such as `--cd` are passed to `wsl.exe` unchanged;
 - defines `killwin WINPID [...]`, a convenience wrapper around
   `taskkill /PID <WINPID> /F`; use it with the `WINPID` column from
   `ps -eW`, since zsh/MSYS `kill` expects the separate internal PID column;
