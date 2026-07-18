@@ -37,12 +37,56 @@ BUILD="$REPO/build"
 
 to_msys_path() {
     case "$1" in
+        /mnt/[A-Za-z]/*)
+            drive=${1#/mnt/}
+            drive=${drive%%/*}
+            rest=${1#/mnt/?/}
+            case "$drive" in
+                A) drive=a ;; B) drive=b ;; C) drive=c ;; D) drive=d ;;
+                E) drive=e ;; F) drive=f ;; G) drive=g ;; H) drive=h ;;
+                I) drive=i ;; J) drive=j ;; K) drive=k ;; L) drive=l ;;
+                M) drive=m ;; N) drive=n ;; O) drive=o ;; P) drive=p ;;
+                Q) drive=q ;; R) drive=r ;; S) drive=s ;; T) drive=t ;;
+                U) drive=u ;; V) drive=v ;; W) drive=w ;; X) drive=x ;;
+                Y) drive=y ;; Z) drive=z ;;
+            esac
+            printf '/%s/%s\n' "$drive" "$rest"
+            ;;
         [A-Za-z]:/*|[A-Za-z]:\\*)
             if command -v cygpath >/dev/null 2>&1; then
                 cygpath -u "$1"
             else
-                drive=$(printf '%s' "$1" | sed 's#^\([A-Za-z]\):.*#\1#' | tr 'A-Z' 'a-z')
-                rest=$(printf '%s' "$1" | sed 's#^[A-Za-z]:[/\\]*##; s#\\#/#g')
+                drive=${1%%:*}
+                case "$drive" in
+                    A) drive=a ;; B) drive=b ;; C) drive=c ;; D) drive=d ;;
+                    E) drive=e ;; F) drive=f ;; G) drive=g ;; H) drive=h ;;
+                    I) drive=i ;; J) drive=j ;; K) drive=k ;; L) drive=l ;;
+                    M) drive=m ;; N) drive=n ;; O) drive=o ;; P) drive=p ;;
+                    Q) drive=q ;; R) drive=r ;; S) drive=s ;; T) drive=t ;;
+                    U) drive=u ;; V) drive=v ;; W) drive=w ;; X) drive=x ;;
+                    Y) drive=y ;; Z) drive=z ;;
+                esac
+                rest=${1#?:}
+                while :; do
+                    case "$rest" in
+                        /*|\\*) rest=${rest#?} ;;
+                        *) break ;;
+                    esac
+                done
+                out=
+                while :; do
+                    case "$rest" in
+                        *\\*)
+                            out=$out${rest%%\\*}/
+                            rest=${rest#*\\}
+                            ;;
+                        *)
+                            out=$out$rest
+                            break
+                            ;;
+                    esac
+                done
+                rest=$out
                 printf '/%s/%s\n' "$drive" "$rest"
             fi
             ;;
@@ -52,15 +96,51 @@ to_msys_path() {
     esac
 }
 
+# Forward-slash Windows form (C:/foo/bar), which both cmd.exe and MSYS2 bash
+# accept -- used when relaunching bash through cmd.exe (see the /tmp handover
+# workaround below).
+to_windows_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+    else
+        printf '%s\n' "$1" | sed 's#^/\([A-Za-z]\)/#\1:/#'
+    fi
+}
+
 MSYS2_ROOT="$HOME/scoop/apps/msys2/current"
 [ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="$(to_msys_path "$USERPROFILE")/scoop/apps/msys2/current"
 [ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="/c/msys64"
 MSYS2_BASH="$MSYS2_ROOT/usr/bin/bash.exe"
+MSYS2_USR_BIN="$MSYS2_ROOT/usr/bin"
 
 if [ ! -x "$MSYS2_BASH" ]; then
     echo "error: MSYS2 not found; run helper/install_build_tool.sh first" >&2
     exit 1
 fi
+
+# The caller may be PowerShell -> Scoop sh.exe -> this script, with Scoop
+# shims ahead of MSYS2 in PATH. Force MSYS2's real POSIX tools to win before
+# the first mkdir/sed/grep call; stale BusyBox shims can otherwise break the
+# build before the inner bash environment is even launched.
+PATH="$MSYS2_USR_BIN:$PATH"
+export PATH
+
+# bash.exe probes the MSYS2 root /tmp at startup and prints
+#   bash.exe: warning: could not find /tmp, please create!
+# when it is missing (scoop's MSYS2 does not always create it). Create it from
+# this outer shell BEFORE launching bash below: the TMPDIR/mkdir inside the
+# -lc script runs too late (bash has already emitted the warning at startup)
+# and targets the build dir, not this MSYS2 root /tmp that bash checks.
+#
+# Caveat: this only covers a genuinely-missing /tmp. If this script is driven
+# through a FOREIGN msys-2.0.dll runtime -- e.g. running the build through the
+# packaged portable zsh itself -- that parent's fork/exec handover corrupts a
+# same-named different-build child's mount table, so MSYS2 bash resolves / (and
+# /tmp) to the wrong root and warns regardless of this mkdir. Run compile.sh
+# from PowerShell, Git Bash, or a real MSYS2 shell (a native/compatible
+# parent), not through the portable zsh. Same class as the '/'-resolution
+# limitation documented in helper/test/test_windows_packaging.zsh.
+mkdir -p "$MSYS2_ROOT/tmp"
 
 # --- Guard against CRLF-damaged checkouts ----------------------------------
 if [ -f "$SRC/configure.ac" ] && grep -q "$(printf '\r')" "$SRC/configure.ac"; then
@@ -146,7 +226,11 @@ elif [ -f "$ZLE_BACKUP/Src/Zle/zle.h" ] && \
 fi
 
 # --- preconfig, configure (in build/), make ---------------------------------
-"$MSYS2_BASH" -lc "
+# Assembled here, then run below either directly or (when the MSYS2 mount
+# handover is broken -- see the dispatch after the closing quote) through
+# cmd.exe. The script is self-contained: it sets its own PATH/TMPDIR and cd's
+# to an absolute path, so it does not depend on the inherited environment.
+_msys_build_script="
     set -e
     export PATH=/usr/bin:\$PATH
     export TMPDIR='$BUILD_MSYS/tmp'
@@ -229,7 +313,11 @@ fi
     cd '$BUILD_MSYS'
     DL_EXT=\$(sed -n 's/^DL_EXT[[:space:]]*=[[:space:]]*//p' Src/Makefile | head -1)
     rm -rf bin
-    mkdir -p bin
+    mkdir -p bin/etc bin/tmp
+    cat > bin/etc/fstab <<'EOF_FSTAB'
+# Use MSYS2 short drive mounts such as /c/Users in the portable runtime.
+none / cygdrive binary,posix=0,noacl,user 0 0
+EOF_FSTAB
     cp Src/zsh.exe bin/zsh.exe
     cp Src/libzsh-*.\$DL_EXT bin/
 
@@ -257,11 +345,20 @@ fi
     fi
 
     # Bundle MSYS tools the portable runtime expects to win over Windows,
-    # BusyBox, Git-for-Windows, or other sh environments on PATH. Keep this
-    # list intentionally small: common pipeline tools, terminal-state tools,
-    # and sh/env, not the whole MSYS /usr/bin directory. ps must be the
-    # MSYS/Cygwin one with -W support, not BusyBox ps.
-    for tool in sh find xargs grep ps awk sed sort head tail cat cut tr wc uname env tee ls locale tar stty reset tset infocmp tput; do
+    # BusyBox, Git-for-Windows, or other sh environments on PATH. This covers
+    # every currently-detected BusyBox-backed Scoop shim that also has an
+    # MSYS2 /usr/bin/<tool>.exe equivalent, plus terminal helpers used by zsh.
+    # ps must be the MSYS/Cygwin one with -W support, not BusyBox ps.
+    for tool in '[' ar arch ash awk base32 base64 basename bash cal cat chattr \
+        chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
+        expand expr factor false find flock fold getopt grep groups gzip \
+        head hexdump id install join kill less link ln locale logname ls \
+        lsattr lzcat lzma make man md5sum mkdir mktemp mv nl nproc od \
+        paste printenv ps pwd readlink realpath reset rev rm rmdir sed seq \
+        sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort \
+        split stat strings stty sum sync tac tail tar tee test time timeout \
+        touch tr true truncate tset tsort uname unexpand uniq unlink unlzma \
+        unxz uuidgen wc wget which whoami xargs xzcat yes infocmp tput; do
         if command -v \$tool.exe >/dev/null 2>&1; then
             tool_exe=\"\$(command -v \$tool.exe)\"
             if [ \"\$tool\" = ps ] && ! \"\$tool_exe\" -W >/dev/null 2>&1; then
@@ -321,6 +418,33 @@ fi
     fi
 "
 
+# Run the assembled build script under MSYS2 bash. Normally direct. But if
+# MSYS2 bash comes up unable to see /tmp, this script's parent is a FOREIGN
+# msys-2.0.dll runtime (e.g. the build was driven through the packaged
+# portable zsh itself): its fork/exec handover corrupts a same-named
+# different-build child's mount table, so bash resolves / and /tmp to the
+# wrong root and cannot find /tmp. Relaunch through cmd.exe -- a native
+# process -- which lets MSYS2 bash initialize a correct mount table. The
+# probe (test -d /tmp) is spawned the same way, so it detects the breakage.
+# ZSH_COMPILE_FORCE_CMD=1 forces the cmd.exe route unconditionally -- for
+# testing, or from a shell you already know corrupts the handover.
+if [ -z "${ZSH_COMPILE_FORCE_CMD:-}" ] && "$MSYS2_BASH" -c 'test -d /tmp' 2>/dev/null; then
+    "$MSYS2_BASH" -lc "$_msys_build_script"
+else
+    echo '==> MSYS2 /tmp unreachable (foreign msys runtime parent); relaunching bash via cmd.exe...'
+    mkdir -p "$BUILD/tmp"
+    _msys_script_file="$BUILD/tmp/compile_msys_build.sh"
+    printf '%s\n' "$_msys_build_script" > "$_msys_script_file"
+    # cmd.exe needs a BACKSLASH exe path -- forward slashes make it mis-split
+    # the path at each component (e.g. .../current -> a stray 'urrent'
+    # command). bash then reads a forward-slash script path fine. And
+    # MSYS2_ARG_CONV_EXCL stops the outer shell (Git Bash / MSYS2) from
+    # rewriting the '/c' switch into a path on the way to cmd.
+    _msys_bash_win=$(cygpath -w "$MSYS2_BASH" 2>/dev/null || to_windows_path "$MSYS2_BASH")
+    _msys_script_win=$(to_windows_path "$_msys_script_file")
+    MSYS2_ARG_CONV_EXCL='*' cmd /c "$_msys_bash_win" -l "$_msys_script_win"
+fi
+
 # --- Portable launcher + zsh bootstrap --------------------------------------
 # Written here (outer script), not inside the MSYS2 -lc "..." string above:
 # these heredocs contain literal double quotes, which would otherwise close
@@ -338,7 +462,7 @@ set "ZSH_WIN_HOME=%USERPROFILE%"
 set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%/share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"
-set "TERMINFO=/cygdrive/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
+set "TERMINFO=/%ZSH_TERMINFO_DRIVE%%ZSH_TERMINFO_PATH%"
 rem "C.utf8" (as in `locale -a`), NOT "C.UTF-8": the dashed spelling is
 rem not a real Cygwin locale and is mis-decoded, which scrambles ZLE input.
 set "LC_CTYPE=C.utf8"
@@ -404,7 +528,10 @@ if [[ -n $zsh_portable_dir ]]; then
   zsh_portable_dir=${zsh_portable_dir%/}
   zsh_portable_dir_win=$zsh_portable_dir
   if [[ $zsh_portable_dir == [A-Za-z]:/* ]]; then
-    zsh_portable_dir="/cygdrive/${(L)zsh_portable_dir[1]}/${zsh_portable_dir[4,-1]}"
+    zsh_portable_dir="/${(L)zsh_portable_dir[1]}/${zsh_portable_dir[4,-1]}"
+  fi
+  if [[ ! -d $zsh_portable_dir && $zsh_portable_dir == /[A-Za-z]/* ]]; then
+    zsh_portable_dir="/cygdrive/${(L)zsh_portable_dir[2]}${zsh_portable_dir[3,-1]}"
   fi
   module_path=("$zsh_portable_dir" $module_path)
   TERMINFO="$zsh_portable_dir/share/terminfo"
@@ -414,22 +541,35 @@ fi
 # uppercase spelling is not a real Cygwin locale here and is mis-decoded
 # (mbrtowc is inconsistent), which puts ZLE into multibyte mode with
 # unreliable decoding and desyncs the cursor from the display -- even
-# plain ASCII line editing gets scrambled. This runs on every session
-# (via the .zshenv forwarding stub), so it, not the launcher's setting,
-# is what the interactive shell ends up with.
-LC_CTYPE=C.utf8
-export LC_CTYPE
-if [[ -z ${LANG:-} ]]; then
-  LANG=C.utf8
-  export LANG
-fi
+# plain ASCII line editing gets scrambled. LC_ALL has priority over
+# LC_CTYPE, so remove a user-provided LC_ALL after startup files too.
+zsh_portable_fix_locale() {
+  if [[ -n ${LC_ALL:-} && ${LC_ALL:-} != C.utf8 ]]; then
+    unset LC_ALL
+  fi
+  LC_CTYPE=C.utf8
+  export LC_CTYPE
+  if [[ -z ${LANG:-} || ${LANG:-} == C.UTF-8 ]]; then
+    LANG=C.utf8
+    export LANG
+  fi
+}
+zsh_portable_fix_locale
+unsetopt nomatch
 if [[ -n ${ZSH_WIN_HOME:-} ]]; then
   HOME=${ZSH_WIN_HOME//\\//}
   export HOME
 fi
-if [[ -n ${ZSH_START_CWD:-} && -d ${ZSH_START_CWD:-} ]]; then
-  cd -- ${ZSH_START_CWD:-} 2>/dev/null || true
+if [[ -n ${ZSH_START_CWD:-} ]]; then
+  zsh_start_cwd=$ZSH_START_CWD
+  if [[ ! -d $zsh_start_cwd && $zsh_start_cwd == /[A-Za-z]/* ]]; then
+    zsh_start_cwd="/cygdrive/${(L)zsh_start_cwd[2]}${zsh_start_cwd[3,-1]}"
+  fi
+  if [[ -d $zsh_start_cwd ]]; then
+    cd -- $zsh_start_cwd 2>/dev/null || true
+  fi
   unset ZSH_START_CWD
+  unset zsh_start_cwd
 fi
 function taskkill.exe {
   MSYS2_ARG_CONV_EXCL='*' command taskkill.exe "$@"
@@ -463,7 +603,7 @@ if [[ -o interactive ]]; then
   PROMPT="%n@%~%# "
   zsh_portable_fix_keys() {
     local zsh_portable_keymap
-    for zsh_portable_keymap in main emacs viins; do
+    for zsh_portable_keymap in main emacs viins vicmd; do
       bindkey -M "$zsh_portable_keymap" "^M" accept-line 2>/dev/null
       bindkey -M "$zsh_portable_keymap" "^J" accept-line 2>/dev/null
       bindkey -M "$zsh_portable_keymap" "^?" backward-delete-char 2>/dev/null
@@ -504,6 +644,7 @@ if [[ -n ${ZSH_ORIG_ZDOTDIR:-} ]]; then
     ZDOTDIR=${ZSH_PORTABLE_DIR:-}
     export ZDOTDIR
   fi
+  zsh_portable_fix_locale
   unset zsh_portable_user_zdotdir
 fi
 unset zsh_portable_dir zsh_portable_dir_win
@@ -529,6 +670,9 @@ if [[ -n \${ZSH_ORIG_ZDOTDIR:-} ]]; then
   fi
   if (( \$+functions[zsh_portable_fix_keys] )); then
     zsh_portable_fix_keys
+  fi
+  if (( \$+functions[zsh_portable_fix_locale] )); then
+    zsh_portable_fix_locale
   fi
   unset zsh_portable_user_zdotdir
 fi
