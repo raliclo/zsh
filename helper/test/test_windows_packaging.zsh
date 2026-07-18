@@ -41,6 +41,7 @@ fi
 # backslashes eaten as escapes by the nested shell (C:\Users -> C:Users).
 # Forward-slash drive paths resolve fine in the Cygwin runtime.
 BINDIR=${1//\\//}
+BINDIR=${BINDIR:A}
 LAUNCHER=$BINDIR/zsh-loader.exe
 INTERP=$BINDIR/zsh.exe
 ZSHCMD=$BINDIR/zsh.cmd
@@ -103,6 +104,23 @@ test_embedded_quotes() {
     fi
 }
 
+# --- Windows/POSIX scripts often pass regex groups such as
+# (run_round|encode-win|...) to grep/rg/PowerShell. In stock zsh, an
+# unmatched glob-like token aborts with "no matches found"; the portable
+# Windows environment keeps those arguments literal for script compatibility.
+test_nomatch_disabled_for_regex_args() {
+    local out
+    out=$("$LAUNCHER" -c '
+        print -r -- (run_round|encode-win|decode-win|rss-win|lzfse|swift_tar)
+        print -r -- rss-win | grep -E (run_round|encode-win|decode-win|rss-win|lzfse|swift_tar)
+    ' 2>&1)
+    if [[ $out == $'(run_round|encode-win|decode-win|rss-win|lzfse|swift_tar)\nrss-win' ]]; then
+        pass_test "unmatched regex-like grouped args pass through literally"
+    else
+        fail_test "unmatched regex-like grouped args pass through literally" "got: ${(qq)out}"
+    fi
+}
+
 # --- bundled GNU find must win over Windows' incompatible System32 one --
 test_find_bundled() {
     local out
@@ -130,14 +148,14 @@ test_xargs_bundled() {
 # derives this from its OWN inherited cwd (GetCurrentDirectoryW) and hands
 # it to the child via ZSH_START_CWD, which .zshenv cd's into; it must NOT
 # rely on the caller's PWD env var, which an MSYS parent (Git Bash) mangles
-# into "<msys-root>/cygdrive/c/..." when spawning a native child. Without
+# into "<msys-root>/c/..." when spawning a native child. Without
 # this, `cat some/relative/file` fails with "No such file or directory"
 # even though the prompt shows the right directory. Runs WITHOUT -f so the
 # .zshenv ZSH_START_CWD handoff is exercised. -------------------------
 test_startup_cwd() {
     local tmp out
     # A path under $BINDIR, not /tmp: the standalone MSYS runtime resolves
-    # a fresh process's POSIX absolute paths (/tmp, /cygdrive/c/...)
+    # a fresh process's POSIX absolute paths (/tmp, /c/...)
     # unreliably, but a Windows-form path derived from $BINDIR (which it
     # already resolves as the runtime's own location) works.
     tmp=$BINDIR/.cwd-test.$$
@@ -151,6 +169,24 @@ test_startup_cwd() {
         pass_test "child inherits the caller's cwd (relative paths resolve at startup)"
     else
         fail_test "child inherits the caller's cwd (relative paths resolve at startup)" "got: ${(qq)out}"
+    fi
+}
+
+# --- packaged runtime paths should use MSYS2's short drive mount form. -----
+test_msys_drive_prefix() {
+    local out
+    out=$("$LAUNCHER" -c '
+        test -r /etc/fstab || exit 4
+        grep -q "none / cygdrive" /etc/fstab || exit 5
+        test -d /c || exit 1
+        [[ $PWD == /c/* ]] || exit 2
+        [[ $TERMINFO == /c/* ]] || exit 3
+        print -r -- msys_drive_ok
+    ' 2>&1)
+    if [[ $out == *msys_drive_ok* ]]; then
+        pass_test "packaged runtime drive paths use /<drive> and resolve"
+    else
+        fail_test "packaged runtime drive paths use /<drive> and resolve" "got: ${(qq)out}"
     fi
 }
 
@@ -172,16 +208,49 @@ test_tar_bundled() {
 test_portable_usr_bin_tools() {
     local out
     out=$("$LAUNCHER" -f -c '
-        test -x /usr/bin/env &&
-        for tool in ls locale stty reset tset infocmp tput; do
-            command -v $tool | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || exit 10
+        tmp='$BINDIR'/.packaging-tool-test.$$ || exit 1
+        mkdir -p -- $tmp || { print mkdir_tmp_failed; exit 20; }
+        cd -- $tmp || { print cd_tmp_failed; exit 21; }
+        test -x /usr/bin/env || { print env_missing; exit 22; }
+        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv which make sha256sum; do
+            whence -p "$tool" | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || { print -r -- "missing_or_shadowed:$tool"; exit 10; }
         done &&
+        command -v -- "[" >/dev/null || { print bracket_lookup_failed; exit 23; }
+        test -x "/usr/bin/[" || { print bracket_exe_missing; exit 24; }
+        "/usr/bin/[" -x /usr/bin/env "]" || { print bracket_exe_failed; exit 25; }
+        du -s . >/dev/null &&
+        : > file &&
+        cp file copy &&
+        mv copy moved &&
+        test -f moved &&
+        cd -- '$BINDIR' &&
+        rm -rf -- $tmp &&
+        which sh >/dev/null &&
+        print test | sha256sum >/dev/null &&
         print tools_ok
     ' 2>&1)
     if [[ $out == *tools_ok* ]]; then
-        pass_test "/usr/bin/env and terminal helpers resolve from the portable runtime"
+        pass_test "/usr/bin/env, du, and terminal helpers resolve from the portable runtime"
     else
-        fail_test "/usr/bin/env and terminal helpers resolve from the portable runtime" "got: ${(qq)out}"
+        fail_test "/usr/bin/env, du, and terminal helpers resolve from the portable runtime" "got: ${(qq)out}"
+    fi
+}
+
+# --- `[` is both shell syntax and an executable named "[.exe". Ensure tests
+# and scripts can resolve and invoke the executable by quoting it explicitly;
+# unquoted `[` in generated one-liners can leave zsh waiting for syntax that
+# never arrives, which looks like a hang. ----------------------------------
+test_bracket_tool_lookup() {
+    local out
+    out=$("$LAUNCHER" -c '
+        command -v -- "[" &&
+        "/usr/bin/[" -x /usr/bin/env "]" &&
+        print bracket_tool_ok
+    ' 2>&1)
+    if [[ $out == *"bracket_tool_ok"* ]]; then
+        pass_test "quoted '[' command lookup and /usr/bin/[ execution work"
+    else
+        fail_test "quoted '[' command lookup and /usr/bin/[ execution work" "got: ${(qq)out}"
     fi
 }
 
@@ -231,6 +300,35 @@ test_utf8_filename_roundtrip() {
         pass_test "UTF-8 filenames round-trip through ls"
     else
         fail_test "UTF-8 filenames round-trip through ls" "got: ${(qq)out}"
+    fi
+}
+
+# --- User startup files must not override the Cygwin locale required by ZLE.
+# LC_ALL has priority over LC_CTYPE; if ~/.zshrc exports a non-C.utf8 LC_ALL,
+# ZLE can display the typed line correctly while executing a corrupted buffer
+# after bracketed paste or other multibyte input activity. ----------------
+test_user_lc_all_is_sanitized() {
+    local tmp out
+    tmp=$BINDIR/.locale-rc-test.$$
+    mkdir -p -- $tmp || {
+        fail_test "user LC_ALL cannot override portable ZLE locale" "could not create temp dir"
+        return
+    }
+    print -r -- 'export LC_ALL=en_US.UTF-8' > $tmp/.zshrc
+
+    out=$(ZDOTDIR=$tmp "$LAUNCHER" -ic '
+        print -r -- "LC_ALL=${LC_ALL-}"
+        print -r -- "LC_CTYPE=$LC_CTYPE"
+        print -r -- "LANG=$LANG"
+    ' 2>&1)
+    rm -f -- $tmp/.zshrc
+    rmdir -- $tmp
+
+    if [[ $out == *"LC_ALL="* && $out != *"LC_ALL=en_US.UTF-8"* &&
+          $out == *"LC_CTYPE=C.utf8"* ]]; then
+        pass_test "user LC_ALL cannot override portable ZLE locale"
+    else
+        fail_test "user LC_ALL cannot override portable ZLE locale" "got: ${(qq)out}"
     fi
 }
 
@@ -480,57 +578,80 @@ test_multibyte_cursor_and_delete() {
     fi
 }
 
+# --- MSYS2 bash prints "bash.exe: warning: could not find /tmp" at startup
+# when its root /tmp is missing (scoop's MSYS2 does not always create it).
+# compile.sh must create $MSYS2_ROOT/tmp from the OUTER shell BEFORE launching
+# bash -- the TMPDIR/mkdir inside the -lc script runs after bash has already
+# warned. Guard the fix two ways: the ordering in compile.sh, and (when MSYS2
+# is present) that creating that /tmp does suppress the startup warning. ------
+test_msys2_tmp_startup() {
+    local repo=${BINDIR:h:h}
+    local compile=$repo/helper/compile.sh
+    if [[ ! -f $compile ]]; then
+        fail_test "compile.sh creates \$MSYS2_ROOT/tmp before launching bash" "compile.sh not found at $compile"
+        return
+    fi
+    # Ordering guard: the mkdir of the MSYS2 root /tmp must come before the
+    # first `"$MSYS2_BASH" -lc` invocation, else bash warns before it runs.
+    local mkdir_ln bash_ln
+    mkdir_ln=$(grep -nE 'mkdir -p "\$MSYS2_ROOT/tmp"' $compile | head -1 | cut -d: -f1)
+    bash_ln=$(grep -nE '"\$MSYS2_BASH" -lc' $compile | head -1 | cut -d: -f1)
+    if [[ -n $mkdir_ln && -n $bash_ln && $mkdir_ln -lt $bash_ln ]]; then
+        pass_test "compile.sh creates \$MSYS2_ROOT/tmp before launching bash (line $mkdir_ln < $bash_ln)"
+    else
+        fail_test "compile.sh creates \$MSYS2_ROOT/tmp before launching bash" "mkdir line='$mkdir_ln' bash line='$bash_ln'"
+    fi
+
+    # Functional check: reach MSYS2 bash through a NATIVE intermediary
+    # (cmd.exe), the way a PowerShell / Git Bash / real-MSYS2 parent does --
+    # the supported way to run compile.sh. That path initializes the mount
+    # table cleanly, so bash must start without the /tmp warning.
+    #
+    # (Spawning MSYS2 bash *directly* from here would instead reproduce the
+    # foreign-runtime bug: this test itself runs under the packaged zsh, whose
+    # msys-2.0.dll is a different build of the same name, so its handover
+    # corrupts the child's mount table and bash cannot find /tmp. That is the
+    # documented limitation -- run the build from a native parent -- not
+    # something compile.sh can paper over, so we don't assert on it.)
+    local root=$HOME/scoop/apps/msys2/current
+    [[ -e $root/usr/bin/bash.exe ]] || root=/c/msys64
+    local msys_bash=$root/usr/bin/bash.exe
+    if [[ ! -e $msys_bash ]]; then
+        pass_test "MSYS2 bash (via native cmd.exe) starts without a /tmp warning (skipped: MSYS2 not installed)"
+        return
+    fi
+    mkdir -p "$root/tmp" 2>/dev/null
+    local warn
+    warn=$(cmd /c "$msys_bash" -lc 'true' 2>&1 >/dev/null)
+    if [[ $warn != *"could not find /tmp"* ]]; then
+        pass_test "MSYS2 bash (via native cmd.exe) starts without a /tmp warning"
+    else
+        fail_test "MSYS2 bash (via native cmd.exe) starts without a /tmp warning" "got: ${(qq)warn}"
+    fi
+}
+
 test_multiline_c
 test_pipe_in_quotes
 test_embedded_quotes
+test_nomatch_disabled_for_regex_args
 test_find_bundled
 test_xargs_bundled
 test_startup_cwd
+test_msys_drive_prefix
 test_tar_bundled
 test_portable_usr_bin_tools
+test_bracket_tool_lookup
 test_windows_exe_wrappers
 test_utf8_filename_roundtrip
+test_user_lc_all_is_sanitized
 test_modules_load
 test_nested_zsh
 test_user_rc_forwarding
 test_path_system32_last
 test_pid_is_real_winpid
 test_multibyte_cursor_and_delete
+test_msys2_tmp_startup
 
 print
 print "Results: $pass passed, $fail failed"
 (( fail == 0 ))
-
-# --- known open bug: NOT covered by a test above, documented here -------
-#
-# Freshly-started zsh.exe (or anything that forwards to it, i.e.
-# zsh-loader.exe/zsh.cmd) resolves '/' to the calling process's cwd rather than
-# a fixed filesystem root, when run standalone without the rest of a
-# normal MSYS2 install tree (only a handful of files sit flatly in
-# build/bin/, not the usual usr/bin/... nesting a real MSYS2 install has
-# msys-2.0.dll under). Repro:
-#   cd C:\Users\lowei\proj\zsh
-#   build\bin\zsh.exe -f -c 'ls -ld /'
-#   -> prints C:/Users/lowei/proj/zsh/ instead of a real root
-# Consequences: $PWD is wrong at startup (shows "/" instead of the real
-# cwd, until something explicitly cd's); /tmp, /etc, and every other
-# absolute path resolve relative to whatever directory the caller
-# happened to launch zsh from, so e.g. "echo x > /tmp/a" or a heredoc
-# (which needs to create a temp file under /tmp) fails with "no such
-# file or directory" whenever cwd doesn't happen to contain a matching
-# subdirectory. This is very likely the root cause of the "/tmp path
-# translation inconsistency" bug reported against this packaging
-# (heredocs failing, TMPDIR/TMPPREFIX overrides not helping).
-# A real MSYS2 install's bash does NOT have this problem when spawned
-# the same way (verified against the system install on this machine),
-# so it's specific to running msys-2.0.dll outside its normal directory
-# layout, not an inherent Cygwin/MSYS2-on-Windows limitation. Bundling a
-# minimal /etc/fstab next to msys-2.0.dll (either alongside it or one
-# directory up) was tried and did not fix it, and a naive fstab
-# containing only the "none / cygdrive ..." override made matters worse
-# (it looks like it replaces rather than supplements the DLL's built-in
-# default mounts, e.g. /tmp -> the Windows temp directory disappeared
-# too). Not yet fixed: needs someone to work out what a from-scratch
-# msys-2.0.dll actually needs on disk (or in the registry) to compute a
-# real root without a full MSYS2 install tree present, which is a
-# bigger investigation than the fixes in this file.
