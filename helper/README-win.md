@@ -8,17 +8,33 @@ zsh is a POSIX shell and cannot be built with MSVC alone; it needs the MSYS2
 - [scoop](https://scoop.sh) and/or [winget](https://learn.microsoft.com/windows/package-manager/winget/)
   available on PATH. `install_build_tool.sh` will install scoop via winget if
   it's missing.
-- Run scripts from Git Bash or another POSIX shell (not PowerShell/cmd).
+- Run build/install from PowerShell as the outer driver, invoking MSYS2's
+  `bash.exe` explicitly. This avoids crossing from the packaged zsh runtime
+  into a different MSYS2 runtime during `configure`/`make`.
 
 ## Usage
 
-```sh
-sh helper/install_build_tool.sh   # one-time: installs MSYS2 + MSYS GCC, native Clang, and build tools
-sh helper/compile.sh              # builds zsh into ./build
-sh helper/scoop_install.sh        # optional: install the result as a scoop app with a `zsh` shim
-zsh helper/test/test_windows_packaging.zsh <path-to-build/bin>  # optional: regression tests
-helper\test\run_all_tests.bat     # optional: run all helper/test/*.zsh tests from cmd/PowerShell
+```powershell
+# one-time: installs MSYS2 + MSYS GCC, native Clang, and build tools
+& 'C:\Users\lowei\scoop\apps\msys2\current\usr\bin\bash.exe' -lc 'cd /c/Users/lowei/proj/zsh && sh helper/install_build_tool.sh'
+
+# build zsh into ./build
+& 'C:\Users\lowei\scoop\apps\msys2\current\usr\bin\bash.exe' -lc 'cd /c/Users/lowei/proj/zsh && sh helper/compile.sh'
+
+# optional: install the result as a Scoop app with a `zsh` shim
+& 'C:\Users\lowei\scoop\apps\msys2\current\usr\bin\bash.exe' -lc 'export PATH=/c/Users/lowei/scoop/shims:/c/Users/lowei/scoop/apps/git/current/cmd:/usr/bin:$PATH; cd /c/Users/lowei/proj/zsh && sh helper/scoop_install.sh'
+
+# optional: regression tests
+helper\test\run_all_tests.bat
 ```
+
+When using a different checkout path, adjust only the `cd /c/Users/lowei/proj/zsh`
+part. Use MSYS2's short drive mount form (`/c/Users/...`) for build commands;
+if `helper/compile.sh` receives a `/mnt/c/Users/...` path, it normalizes that
+back to `/c/Users/...` before invoking MSYS2 `bash.exe`. Avoid launching
+`helper/compile.sh` from the packaged zsh itself; nested or foreign MSYS
+runtimes can fail before user code runs or make MSYS2 resolve `/tmp` against
+the wrong root.
 
 ### install_build_tool.sh
 
@@ -39,6 +55,11 @@ nested zsh invocations start with fresh runtime state.
 
 Builds zsh out-of-tree so the source directory stays clean:
 
+Build-time paths are MSYS2 paths, not packaged-runtime paths. Prefer
+`/c/Users/...` in the PowerShell `bash.exe -lc` command line. The compile
+helper accepts `/mnt/<drive>/...` input for convenience, but converts it to
+`/<drive>/...` before running `configure`, `make`, and packaging steps.
+
 1. Verifies `Src/Zle/zle.h` and `Src/Zle/zle_move.c` still match the sha256
    checksums in `helper/patches/checksum.txt`, then applies
    `helper/patches/windows-zle-surrogate-pairs.patch` to the source tree.
@@ -58,8 +79,11 @@ Builds zsh out-of-tree so the source directory stays clean:
 4. Assembles a **portable runtime in `build/bin`**: `zsh.exe` (the real
    interpreter), a native launcher compiled as `zsh-loader.exe`, `zsh.cmd`,
    `libzsh-*.so`/`.dll`, all dynamic modules from `config.modules`, a
-   bootstrap `.zshenv`, MSYS2 runtime DLLs discovered via `ldd`, `tput.exe`,
-   bundled GNU `find`/`xargs`/`tar`, and the MSYS2 terminfo database.
+   bootstrap `.zshenv`, MSYS2 runtime DLLs discovered via `ldd`, terminal
+   helpers, a broad MSYS2 coreutils/findutils/diffutils-style tool set used to
+   override stale BusyBox/Scoop shims, the MSYS2 terminfo database, and a
+   minimal `etc/fstab`/`tmp` layout so the portable runtime resolves short
+   drive mounts such as `/c/Users/...`.
 5. Reverts the ZLE patch applied in step 1, so the source tree is clean
    again for merging upstream zsh changes.
 6. Removes autotools-generated files from the source tree
@@ -142,23 +166,35 @@ assembly into `build/bin`) from Git Bash — it will fail with error
 
 The launcher/bootstrap also:
 
-- switches the console to UTF-8 (code page 65001) on entry and restores the
-  original code page on exit, so UTF-8 output (and typed multibyte input)
-  round-trips correctly instead of showing as mojibake on a console left on
-  a legacy code page;
-- sets `LC_CTYPE=C.UTF-8` before starting the MSYS zsh runtime, so Windows
-  Unicode filenames (for example Chinese `.xlsx` names) are decoded and
-  printed as UTF-8 instead of through a legacy code page;
+- switches the console output to UTF-8 (code page 65001) on entry and restores
+  the original output code page on exit, so UTF-8 output round-trips correctly
+  instead of showing as mojibake on a console left on a legacy code page;
+- sets `LC_CTYPE=C.utf8` before starting the MSYS zsh runtime, and reasserts it
+  after user startup files. `LC_ALL` from user rc files is unset when it would
+  override this, because unsupported locale names such as `en_US.UTF-8` can
+  desync ZLE's displayed line from the command buffer after paste/input activity;
 - sets `HOME` from Windows `%USERPROFILE%`, so `~/` resolves to your Windows
   profile instead of a missing `/home/<user>` directory;
 - sets `TERMINFO` before zsh starts and packages `share/terminfo`, so `tput`
   and terminals such as `xterm-256color` work;
+- emits generated Windows drive paths as `/<drive>/...`, matching the MSYS2
+  short drive mount form used during builds, so paths such as `/c/Users/...`
+  are used consistently. The packaged `etc/fstab` enables that short drive
+  mount form inside the portable runtime;
+- disables `nomatch`, so unmatched glob-looking arguments are passed literally
+  like POSIX shells. This prevents regex arguments such as
+  `(run_round|encode-win|decode-win|rss-win|lzfse|swift_tar)` from aborting
+  before tools such as `grep`, `rg`, or PowerShell receive them;
 - prepends `build/bin` to `PATH`, then pushes `%SystemRoot%\System32`,
   `SysWOW64`, and `%SystemRoot%` itself to the very end of `PATH` — those
   ship their own `find`/`sort`/`more`/`where`/... with non-POSIX behavior
-  and Scoop shims can point to BusyBox tools such as `tar`; either would
+  and Scoop shims can point to BusyBox or Windows tools such as `tar`/`du`;
+  either would
   otherwise shadow the bundled GNU tools (or anything else
   earlier on the caller's own `PATH`) no matter where they'd naturally fall;
+  the bundle now includes the MSYS2 equivalents for the detected repairable
+  BusyBox-backed Scoop shims, so those tools win inside zsh even if global
+  Scoop shims are stale or broken;
 - sets the default interactive prompt to `username@current-path`;
 - defines `taskkill` and `taskkill.exe` wrappers that disable MSYS argument
   conversion only for that native Windows command, so normal options such as
@@ -170,7 +206,7 @@ The launcher/bootstrap also:
   `taskkill /PID <WINPID> /F`; use it with the `WINPID` column from
   `ps -eW`, since zsh/MSYS `kill` expects the separate internal PID column;
 - binds both common Backspace sequences (`^?` and `^H`) in `main`, `emacs`,
-  and `viins` keymaps. If Backspace still behaves exactly like Tab, the
+  `viins`, and `vicmd` keymaps. If Backspace still behaves exactly like Tab, the
   terminal is likely sending literal `^I`, which must be fixed in the
   terminal profile/keybinding;
 - restores the standard bracketed-paste binding (`ESC [ 200 ~`) in those
@@ -219,8 +255,9 @@ on any Windows toolchain whose `mbrtowc` does produce surrogate pairs.
 
 ## Installing as a scoop app (scoop_install.sh)
 
-`sh helper/scoop_install.sh` packages `build/bin` and installs it through
-scoop, using the manifest in `bucket/zsh.json`:
+The PowerShell/MSYS2 command shown in "Usage" runs `helper/scoop_install.sh`,
+which packages `build/bin` and installs it through scoop, using the manifest
+in `bucket/zsh.json`:
 
 1. Zips `build/bin/*` to `build/release/zsh.zip` (with Windows' bsdtar —
    PowerShell's `Compress-Archive` cannot read the MSYS2-built binaries).
@@ -245,8 +282,8 @@ scoop, using the manifest in `bucket/zsh.json`:
 The installer clears Scoop's `zsh` download cache before reinstalling, because
 the local `file:///` zip is regenerated on each package run.
 
-To rebuild and reinstall after source changes:
-`sh helper/compile.sh && sh helper/scoop_install.sh`.
+To rebuild and reinstall after source changes, rerun the PowerShell build and
+install commands from "Usage".
 To remove: `scoop uninstall zsh`.
 
 ## Regression tests (helper/test/test_windows_packaging.zsh)
