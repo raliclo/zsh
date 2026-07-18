@@ -251,12 +251,12 @@ static void protect_command_arg(int argc, wchar_t **argv) {
     }
 }
 
-/* Build "/cygdrive/<lower-drive-letter>/rest/of/path" from an absolute
+/* Build "/<lower-drive-letter>/rest/of/path" from an absolute
  * Windows path, matching what zsh.cmd / .zshenv already assume. */
-static void to_cygdrive(const wchar_t *winpath, wchar_t *out, size_t outlen) {
+static void to_msys_drive(const wchar_t *winpath, wchar_t *out, size_t outlen) {
     wchar_t drive = winpath[0];
     if (drive >= L'A' && drive <= L'Z') drive += (L'a' - L'A');
-    swprintf(out, outlen, L"/cygdrive/%lc", drive);
+    swprintf(out, outlen, L"/%lc", drive);
     size_t base = wcslen(out);
     size_t i = 2; /* skip "C:" */
     while (winpath[i] && base + 1 < outlen) {
@@ -365,7 +365,7 @@ int main(void) {
     {
         wchar_t termDir[MAX_PATH];
         swprintf(termDir, MAX_PATH, L"%ls\\share\\terminfo", dir);
-        to_cygdrive(termDir, terminfoPath, MAX_PATH);
+        to_msys_drive(termDir, terminfoPath, MAX_PATH);
     }
     SetEnvironmentVariableW(L"TERMINFO", terminfoPath);
 
@@ -401,8 +401,8 @@ int main(void) {
      * loader's OWN inherited working directory (CreateProcess set it to the
      * caller's cwd), not from the caller's PWD env var: an MSYS parent
      * mangles POSIX-looking env values when spawning a native child -- e.g.
-     * PWD "/cygdrive/c/x" arrives as "C:/Users/.../git/.../cygdrive/c/x" --
-     * so PWD can't be trusted (and from_cygdrive silently rejected it,
+     * PWD "/c/x" arrives as "C:/Users/.../git/.../c/x" --
+     * so PWD can't be trusted (and the drive-path handoff silently rejected it,
      * leaving ZSH_START_CWD unset and this whole handoff dead). The cwd is
      * handed to the child both as its process working directory and, in
      * POSIX form, via ZSH_START_CWD, which the packaged .zshenv cd's into --
@@ -414,7 +414,7 @@ int main(void) {
     if (cwdLen > 0 && cwdLen < MAX_PATH) {
         wchar_t startCwdPosix[MAX_PATH + 16];
         currentDirectory = childCwd;
-        to_cygdrive(childCwd, startCwdPosix, MAX_PATH + 16);
+        to_msys_drive(childCwd, startCwdPosix, MAX_PATH + 16);
         SetEnvironmentVariableW(L"ZSH_START_CWD", startCwdPosix);
     }
 
