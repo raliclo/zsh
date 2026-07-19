@@ -107,7 +107,8 @@ to_windows_path() {
     fi
 }
 
-MSYS2_ROOT="$HOME/scoop/apps/msys2/current"
+MSYS2_HOME=$(to_msys_path "$HOME")
+MSYS2_ROOT="$MSYS2_HOME/scoop/apps/msys2/current"
 [ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="$(to_msys_path "$USERPROFILE")/scoop/apps/msys2/current"
 [ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="/c/msys64"
 MSYS2_BASH="$MSYS2_ROOT/usr/bin/bash.exe"
@@ -124,6 +125,19 @@ fi
 # build before the inner bash environment is even launched.
 PATH="$MSYS2_USR_BIN:$PATH"
 export PATH
+
+missing_build_tools=
+for tool in autoconf make gcc; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        missing_build_tools="$missing_build_tools $tool"
+    fi
+done
+if [ -n "$missing_build_tools" ]; then
+    echo "error: missing MSYS2 build tools:$missing_build_tools" >&2
+    echo "       run: zsh helper/install_build_tool.sh" >&2
+    echo "       checked MSYS2 root: $MSYS2_ROOT" >&2
+    exit 1
+fi
 
 # bash.exe probes the MSYS2 root /tmp at startup and prints
 #   bash.exe: warning: could not find /tmp, please create!
@@ -154,6 +168,7 @@ fi
 
 SRC_MSYS=$(to_msys_path "$SRC")
 BUILD_MSYS=$(to_msys_path "$BUILD")
+SRC_WIN=$(to_windows_path "$SRC")
 
 echo "==> Source tree:  $SRC"
 echo "==> Build output: $BUILD"
@@ -353,32 +368,67 @@ EOF_FSTAB
         chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
         expand expr factor false find flock fold getopt grep groups gzip \
         head hexdump id install join kill less link ln locale logname ls \
-        lsattr lzcat lzma make man md5sum mkdir mktemp mv nl nproc od \
-        paste printenv ps pwd readlink realpath reset rev rm rmdir sed seq \
-        sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort \
+        lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od \
+        paste perl printenv ps pwd readlink realpath reset rev rm rmdir sed \
+        seq sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort \
         split stat strings stty sum sync tac tail tar tee test time timeout \
         touch tr true truncate tset tsort uname unexpand uniq unlink unlzma \
-        unxz uuidgen wc wget which whoami xargs xzcat yes infocmp tput; do
+        unxz uuidgen wc wget which whoami xargs xzcat yes infocmp tput \
+        autoconf autoconf-2.13 autoconf-2.69 autoconf-2.71 autoconf-2.72 \
+        autoconf-2.73 autoheader autoheader-2.13 autoheader-2.69 \
+        autoheader-2.71 autoheader-2.72 autoheader-2.73 autom4te \
+        autom4te-2.69 autom4te-2.71 autom4te-2.72 autom4te-2.73 \
+        autoreconf autoreconf-2.13 autoreconf-2.69 autoreconf-2.71 \
+        autoreconf-2.72 autoreconf-2.73 autoscan autoscan-2.13 \
+        autoscan-2.69 autoscan-2.71 autoscan-2.72 autoscan-2.73 \
+        autoupdate autoupdate-2.13 autoupdate-2.69 autoupdate-2.71 \
+        autoupdate-2.72 autoupdate-2.73 ifnames ifnames-2.13 \
+        ifnames-2.69 ifnames-2.71 ifnames-2.72 ifnames-2.73; do
+        tool_exe=
+        tool_kind=exe
         if command -v \$tool.exe >/dev/null 2>&1; then
             tool_exe=\"\$(command -v \$tool.exe)\"
+        elif command -v \$tool >/dev/null 2>&1; then
+            tool_exe=\"\$(command -v \$tool)\"
+            tool_kind=script
+        fi
+        if [ -n \"\$tool_exe\" ]; then
             if [ \"\$tool\" = ps ] && ! \"\$tool_exe\" -W >/dev/null 2>&1; then
                 echo \"warning: skipping non-MSYS ps.exe without -W support: \$tool_exe\" >&2
                 continue
             fi
-            cp \"\$tool_exe\" bin/
             mkdir -p bin/usr/bin
-            cp \"\$tool_exe\" \"bin/usr/bin/\$tool.exe\"
-            case \"\$tool\" in
-                sh)
-                    mkdir -p bin/bin
-                    cp \"\$tool_exe\" bin/bin/sh.exe
-                    ;;
-            esac
-            ldd \"\$tool_exe\" 2>/dev/null \\
-                | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' \\
-                | while read -r dll; do cp \"\$dll\" bin/; done
+            if [ \"\$tool_kind\" = exe ]; then
+                cp \"\$tool_exe\" bin/
+                cp \"\$tool_exe\" \"bin/usr/bin/\$tool.exe\"
+                case \"\$tool\" in
+                    sh)
+                        mkdir -p bin/bin
+                        cp \"\$tool_exe\" bin/bin/sh.exe
+                        ;;
+                esac
+                ldd \"\$tool_exe\" 2>/dev/null \\
+                    | awk '/=> \/usr\/bin\/msys-/ { print \$3 }' \\
+                    | while read -r dll; do cp \"\$dll\" bin/; done
+            else
+                cp \"\$tool_exe\" \"bin/usr/bin/\$tool\"
+            fi
         fi
     done
+
+    for share_dir in /usr/share/autoconf-*; do
+        [ -d "\$share_dir" ] || continue
+        mkdir -p bin/usr/share
+        cp -R "\$share_dir" bin/usr/share/
+    done
+    if [ -d /usr/lib/perl5 ]; then
+        mkdir -p bin/usr/lib
+        cp -R /usr/lib/perl5 bin/usr/lib/
+    fi
+    if [ -d /usr/share/perl5 ]; then
+        mkdir -p bin/usr/share
+        cp -R /usr/share/perl5 bin/usr/share/
+    fi
 
     # MSYS derives its POSIX root from the executable/DLL layout. Keep a copy
     # of the real interpreter and runtime DLLs under usr/bin so absolute
@@ -405,7 +455,7 @@ EOF_FSTAB
         echo '       run helper/install_build_tool.sh to install mingw-w64-clang-x86_64-clang' >&2
         exit 1
     fi
-    \"\$NATIVE_CLANG\" -O2 -o bin/zsh-loader.exe '$SRC_MSYS/helper/zsh_launcher.c' -lshell32
+    \"\$NATIVE_CLANG\" -O2 -o bin/zsh-loader.exe '$SRC_WIN/helper/zsh_launcher.c' -lshell32
 
     # Guard the property that makes the loader safe to invoke from a running
     # MSYS zsh. Using /usr/bin/clang or /usr/bin/gcc here would silently
@@ -534,8 +584,18 @@ if [[ -n $zsh_portable_dir ]]; then
     zsh_portable_dir="/cygdrive/${(L)zsh_portable_dir[2]}${zsh_portable_dir[3,-1]}"
   fi
   module_path=("$zsh_portable_dir" $module_path)
-  TERMINFO="$zsh_portable_dir/share/terminfo"
-  export TERMINFO
+  if [[ -d $zsh_portable_dir/share/terminfo ]]; then
+    TERMINFO=$zsh_portable_dir/share/terminfo
+    export TERMINFO
+  elif [[ -d $zsh_portable_dir/usr/share/terminfo ]]; then
+    TERMINFO=$zsh_portable_dir/usr/share/terminfo
+    export TERMINFO
+  elif [[ -d /usr/share/terminfo ]]; then
+    TERMINFO=/usr/share/terminfo
+    export TERMINFO
+  else
+    unset TERMINFO
+  fi
 fi
 # "C.utf8" (as it appears in `locale -a`), NOT "C.UTF-8": the dashed/
 # uppercase spelling is not a real Cygwin locale here and is mis-decoded
