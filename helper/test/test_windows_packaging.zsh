@@ -212,9 +212,10 @@ test_portable_usr_bin_tools() {
         mkdir -p -- $tmp || { print mkdir_tmp_failed; exit 20; }
         cd -- $tmp || { print cd_tmp_failed; exit 21; }
         test -x /usr/bin/env || { print env_missing; exit 22; }
-        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv which make sha256sum; do
+        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv which make sha256sum m4 perl autoconf autom4te autoheader autoreconf; do
             whence -p "$tool" | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || { print -r -- "missing_or_shadowed:$tool"; exit 10; }
         done &&
+        autoconf --version >/dev/null || { print autoconf_failed; exit 26; }
         command -v -- "[" >/dev/null || { print bracket_lookup_failed; exit 23; }
         test -x "/usr/bin/[" || { print bracket_exe_missing; exit 24; }
         "/usr/bin/[" -x /usr/bin/env "]" || { print bracket_exe_failed; exit 25; }
@@ -233,6 +234,28 @@ test_portable_usr_bin_tools() {
         pass_test "/usr/bin/env, du, and terminal helpers resolve from the portable runtime"
     else
         fail_test "/usr/bin/env, du, and terminal helpers resolve from the portable runtime" "got: ${(qq)out}"
+    fi
+}
+
+# --- terminfo must be present and usable for common terminals. If the
+# packaged app is missing share/terminfo, zsh starts with
+# "can't find terminal definition for xterm-256color" and every tput call
+# from user startup files repeats the error. -------------------------------
+test_xterm_terminfo_bundled() {
+    local out
+    out=$(TERM=xterm-256color "$LAUNCHER" -c '
+        [[ -d $TERMINFO ]] || { print -r -- "missing_TERMINFO=$TERMINFO"; exit 1; }
+        [[ -f $TERMINFO/78/xterm-256color || -f $TERMINFO/x/xterm-256color ]] || {
+            print -r -- "missing_xterm_256color_in=$TERMINFO"
+            exit 2
+        }
+        tput colors >/dev/null || exit 3
+        print terminfo_ok
+    ' 2>&1)
+    if [[ $out == *terminfo_ok* ]]; then
+        pass_test "xterm-256color terminfo is bundled and tput can read it"
+    else
+        fail_test "xterm-256color terminfo is bundled and tput can read it" "got: ${(qq)out}"
     fi
 }
 
@@ -640,6 +663,7 @@ test_startup_cwd
 test_msys_drive_prefix
 test_tar_bundled
 test_portable_usr_bin_tools
+test_xterm_terminfo_bundled
 test_bracket_tool_lookup
 test_windows_exe_wrappers
 test_utf8_filename_roundtrip
