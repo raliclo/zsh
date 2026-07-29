@@ -30,9 +30,9 @@ if [ "$#" -eq 0 ]; then
     set -- '[' ar arch ash awk base32 base64 basename bash cal cat chattr \
         chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
         echo expand expr factor false find flock fold getopt grep groups gzip \
-        head hexdump id install join kill less link ln locale logname ls \
+        head hexdump id install join kill killall less link ln locale logname ls \
         lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od \
-        paste perl printenv printf ps pwd readlink realpath reset rev rm \
+        paste perl pgrep pidof pkill printenv printf ps pwd readlink realpath reset rev rm \
         rmdir sed seq sh sha1sum sha256sum sha384sum sha512sum shred shuf \
         sleep sort split stat strings stty sum sync tac tail tar tee test \
         time timeout touch tr true truncate tset tsort uname unexpand uniq \
@@ -114,10 +114,34 @@ for tool do
     fi
     shim="$SHIM_DIR/$tool.shim"
     wrapper="$SHIM_DIR/$tool-msys2.cmd"
+    compat_script="$SHIM_DIR/$tool-msys2.sh"
     ps_wrapper="$SHIM_DIR/$tool-msys2.ps1"
     runner="$SHIM_DIR/$tool.exe"
 
-    if [ ! -x "$src" ]; then
+    if [ ! -x "$src" ] && [ "$tool" = pgrep ] &&
+        [ -x "$MSYS2_BIN/sh.exe" ] && [ -x "$MSYS2_BIN/ps.exe" ] &&
+        [ -x "$MSYS2_BIN/awk.exe" ]; then
+        src="$compat_script"
+        src_kind=compat_pgrep
+        {
+            printf '#!/bin/sh\n'
+            printf 'case "${1:-}" in\n'
+            printf '    ""|-*) echo "usage: pgrep PATTERN" >&2; exit 2 ;;\n'
+            printf 'esac\n'
+            printf 'pat=$1\n'
+            printf '"%s/ps.exe" -W | "%s/awk.exe" -v pat="$pat" '\''\n' "$MSYS2_BIN" "$MSYS2_BIN"
+            printf 'NR > 1 {\n'
+            printf '    winpid = $4\n'
+            printf '    command = ""\n'
+            printf '    for (i = 8; i <= NF; i++) command = command (i == 8 ? "" : " ") $i\n'
+            printf '    if (command ~ pat) { print winpid; found = 1 }\n'
+            printf '}\n'
+            printf 'END { exit found ? 0 : 1 }\n'
+            printf '\047\n'
+        } > "$compat_script"
+    fi
+
+    if [ ! -x "$src" ] && [ "$src_kind" != compat_pgrep ]; then
         echo "skip: $tool (missing $MSYS2_BIN/$tool.exe or $MSYS2_BIN/$tool)" >&2
         continue
     fi
@@ -136,7 +160,7 @@ for tool do
         printf 'set "PATH=%%MSYS2_BIN%%;%%PATH%%"\r\n'
         printf 'set "CHERE_INVOKING=1"\r\n'
         printf 'set "MSYS2_ARG_CONV_EXCL=*"\r\n'
-        if [ "$src_kind" = script ]; then
+        if [ "$src_kind" = script ] || [ "$src_kind" = compat_pgrep ]; then
             printf '"%s" "%s" %%*\r\n' "$sh_win" "$src_win"
         else
             printf '"%s" %%*\r\n' "$src_win"
