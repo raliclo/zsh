@@ -31,7 +31,7 @@ for %%T in ("%TEST_DIR%*.zsh") do (
     )
     set /a TOTAL+=1
     echo ==^> %%~nxT
-    "%LAUNCHER%" -f "%%~fT" "%BINDIR%"
+    "%LAUNCHER%" -f "%%~fT" "%BINDIR%" "%ROOT%"
     if errorlevel 1 (
         set /a FAILED+=1
         echo FAIL: %%~nxT
