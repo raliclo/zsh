@@ -41,9 +41,23 @@ fi
 # backslashes eaten as escapes by the nested shell (C:\Users -> C:Users).
 # Forward-slash drive paths resolve fine in the Cygwin runtime.
 BINDIR=${1//\\//}
-BINDIR=${BINDIR:A}
+if [[ $BINDIR == [A-Za-z]:/* ]]; then
+    BINDIR="/${(L)BINDIR[1]}/${BINDIR[4,-1]}"
+else
+    BINDIR=${BINDIR:A}
+fi
+TEST_REPO_ROOT=${2:-}
+if [[ -n $TEST_REPO_ROOT ]]; then
+    TEST_REPO_ROOT=${TEST_REPO_ROOT//\\//}
+    if [[ $TEST_REPO_ROOT == [A-Za-z]:/* ]]; then
+        TEST_REPO_ROOT="/${(L)TEST_REPO_ROOT[1]}/${TEST_REPO_ROOT[4,-1]}"
+    else
+        TEST_REPO_ROOT=${TEST_REPO_ROOT:A}
+    fi
+fi
 LAUNCHER=$BINDIR/zsh-loader.exe
-INTERP=$BINDIR/zsh.exe
+PUBLIC_EXE=$BINDIR/zsh.exe
+INTERP=$BINDIR/usr/bin/zsh.exe
 ZSHCMD=$BINDIR/zsh.cmd
 
 # This script itself runs with -f (no rcs), so .zshenv never sets
@@ -52,10 +66,10 @@ module_path=($BINDIR $module_path)
 
 typeset -i pass=0 fail=0
 
-pass_test() { print -P "%F{green}PASS%f: $1"; (( pass++ )) }
-fail_test() { print -P "%F{red}FAIL%f: $1 -- $2"; (( fail++ )) }
+pass_test() { print -P "%F{green}PASS%f: $1"; (( ++pass )) }
+fail_test() { print -P "%F{red}FAIL%f: $1 -- $2"; (( ++fail )) }
 
-for f in $LAUNCHER $INTERP $ZSHCMD; do
+for f in $LAUNCHER $PUBLIC_EXE $INTERP $ZSHCMD; do
     if [[ ! -f $f ]]; then
         print -u2 "error: $f not found -- run helper/compile.sh first"
         exit 2
@@ -72,6 +86,60 @@ test_multiline_c() {
         pass_test "multi-line -c argument is not truncated"
     else
         fail_test "multi-line -c argument is not truncated" "got: ${(qq)out}"
+    fi
+}
+
+# --- users may bypass the Scoop shim and call apps/zsh/current/zsh.exe
+# directly. That public root executable must be the native launcher too,
+# otherwise PowerShell/MSYS argv boundaries can leak '|' from quoted regexes
+# inside a -c script into real pipelines. ---------------------------------
+test_public_zsh_exe_preserves_pipe_regex() {
+    local out
+    out=$("$PUBLIC_EXE" -lc 'print -r -- "^@@|RGB1|zstd|ZSTD|WriteBackend|ensureDir|TarCodec|level|--rgb1|--zstd|-1\.\.-22"' 2>&1)
+    if [[ $out == '^@@|RGB1|zstd|ZSTD|WriteBackend|ensureDir|TarCodec|level|--rgb1|--zstd|-1\.\.-22' ]]; then
+        pass_test "public zsh.exe preserves quoted pipe-heavy regex arguments"
+    else
+        fail_test "public zsh.exe preserves quoted pipe-heavy regex arguments" "got: ${(qq)out}"
+    fi
+}
+
+# --- the launcher preserves the -c script, but zsh still evaluates that
+# script as shell syntax. Nested Perl/AWK/etc. snippets with $variables must
+# be single-quoted inside the zsh script (or escape each $) so zsh does not
+# expand them before the tool sees them. -----------------------------------
+test_nested_perl_dollars_survive_with_shell_quoting() {
+    local tmp out script
+    tmp=$BINDIR/.perl-dollar-test.$$
+    mkdir -p -- $tmp || { fail_test "nested Perl dollar variables survive with shell quoting" "could not create $tmp"; return }
+    print -r -- alpha > $tmp/lines.txt
+    print -r -- beta >> $tmp/lines.txt
+
+    script=$'cat "'$tmp$'/lines.txt" | perl -ne \'if (/\\r\\n$/) { $crlf++ } elsif (/\\n$/) { $lf++ } END { print qq(parent_crlf=$crlf parent_lf=$lf\\n) }\'; perl -ne \'if (/\\r\\n$/) { $crlf++ } elsif (/\\n$/) { $lf++ } END { print qq(work_crlf=$crlf work_lf=$lf\\n) }\' "'$tmp$'/lines.txt"'
+    out=$("$PUBLIC_EXE" -lc "$script" 2>&1)
+    rm -rf -- $tmp
+    if [[ $out == $'parent_crlf= parent_lf=2\nwork_crlf= work_lf=2' ]]; then
+        pass_test "nested Perl dollar variables survive with shell quoting"
+    else
+        fail_test "nested Perl dollar variables survive with shell quoting" "got: ${(qq)out}"
+    fi
+}
+
+# --- zsh arithmetic commands return false when the expression evaluates to
+# zero. With ERR_EXIT enabled, `(( applied++ ))` therefore exits the script on
+# the first increment because post-increment evaluates to the old value (0).
+# Use pre-increment or assignment increments in helper/test scripts. --------
+test_arithmetic_increment_is_err_exit_safe() {
+    local out
+    out=$("$PUBLIC_EXE" -fc '
+        setopt err_exit
+        integer applied=0
+        (( ++applied ))
+        print -r -- applied=$applied
+    ' 2>&1)
+    if [[ $out == 'applied=1' ]]; then
+        pass_test "pre-increment counters survive ERR_EXIT"
+    else
+        fail_test "pre-increment counters survive ERR_EXIT" "got: ${(qq)out}"
     fi
 }
 
@@ -212,7 +280,7 @@ test_portable_usr_bin_tools() {
         mkdir -p -- $tmp || { print mkdir_tmp_failed; exit 20; }
         cd -- $tmp || { print cd_tmp_failed; exit 21; }
         test -x /usr/bin/env || { print env_missing; exit 22; }
-        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv which make sha256sum m4 perl autoconf autom4te autoheader autoreconf; do
+        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv which make sha256sum pgrep pkill pidof killall m4 perl autoconf autom4te autoheader autoreconf; do
             whence -p "$tool" | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || { print -r -- "missing_or_shadowed:$tool"; exit 10; }
         done &&
         autoconf --version >/dev/null || { print autoconf_failed; exit 26; }
@@ -293,6 +361,30 @@ test_windows_exe_wrappers() {
         pass_test "Windows executable wrappers bypass MSYS option-to-path conversion"
     else
         fail_test "Windows executable wrappers bypass MSYS option-to-path conversion" "got: ${(qq)out}"
+    fi
+}
+
+# --- MSYS rewrites slash-prefixed argv for native Windows programs, so
+# e-invoice barcode test data such as /AB12+-. can be corrupted before Node
+# receives it. Keep JavaScript runtime/test entry points under the same
+# package-level no-conversion wrapper policy. -----------------------------
+test_javascript_wrappers_preserve_slash_prefixed_argv() {
+    local out
+    out=$("$LAUNCHER" -c '
+        whence -w node node.exe npm npx pnpm yarn bun bun.exe deno deno.exe
+        functions zsh_portable_no_msys_arg_conv node node.exe npm npx pnpm yarn bun bun.exe deno deno.exe
+        if whence -p node.exe >/dev/null; then
+            node.exe -e "console.log(JSON.stringify(process.argv.slice(1)))" /AB12+-.
+        else
+            print node_missing_skip
+        fi
+    ' 2>&1)
+    if [[ $out == *"node: function"* && $out == *"node.exe: function"* &&
+          $out == *"MSYS2_ARG_CONV_EXCL"* &&
+          ( $out == *'["/AB12+-."]'* || $out == *"node_missing_skip"* ) ]]; then
+        pass_test "JavaScript wrappers preserve slash-prefixed argv for native runtimes"
+    else
+        fail_test "JavaScript wrappers preserve slash-prefixed argv for native runtimes" "got: ${(qq)out}"
     fi
 }
 
@@ -496,8 +588,9 @@ test_pid_is_real_winpid() {
 #
 # The inner session needs TERM/TERMINFO set to something that actually
 # resolves (this build's bundled terminfo db is hashed by the first
-# letter's hex code, e.g. xterm -> 78/xterm; "dumb" was not enough to
-# avoid a startup error, xterm was), ZSH_PORTABLE_DIR/ZDOTDIR set the
+# letter's hex code, e.g. vt100 -> 76/vt100; "dumb" is too limited for
+# cursor-motion editing, while xterm emits active terminal queries under zpty),
+# ZSH_PORTABLE_DIR/ZDOTDIR set the
 # same way zsh.cmd/zsh-loader.exe do (this spawns zsh.exe directly), and
 # LC_ALL=C.utf8 -- a locale that ACTUALLY appears in `locale -a`, unlike
 # "C.UTF-8"/"POSIX.UTF-8" -- so ZLE decodes the input as wide characters
@@ -517,10 +610,10 @@ zpty_drain() {
             buf+=$chunk
             idle=0
         else
-            (( idle++ ))
+            (( ++idle ))
             sleep 0.05
         fi
-        (( total++ ))
+        (( ++total ))
     done
     print -r -- $buf
 }
@@ -548,16 +641,26 @@ test_multibyte_cursor_and_delete() {
     # user-dir == portable-dir and skip sourcing the developer's real
     # ~/.zshrc into the pty session (slow, noisy, and it would redefine
     # the prompt this test synchronizes on).
-    local spawn_cmd="LC_ALL=C.utf8 TERMINFO='$BINDIR/share/terminfo' ZDOTDIR='$BINDIR' ZSH_ORIG_ZDOTDIR='$BINDIR' ZSH_PORTABLE_DIR='$BINDIR' TERM=xterm PS1='%% ' '$INTERP' -i"
-    if ! zpty $session $spawn_cmd; then
+    local -a spawn_cmd=(
+        env LC_ALL=C.utf8 TERMINFO=$BINDIR/share/terminfo
+        ZDOTDIR=$BINDIR ZSH_ORIG_ZDOTDIR=$BINDIR ZSH_PORTABLE_DIR=$BINDIR
+        TERM=vt100 'PS1=%% ' $INTERP -f -i
+    )
+    if ! zpty $session "${spawn_cmd[@]}"; then
         fail_test "multibyte cursor/delete test setup" "could not start pty session"
         return
     fi
-    if [[ $(zpty_drain $session) != *'% '* ]]; then
-        fail_test "multibyte cursor/delete test setup" "shell did not reach a prompt"
+    zpty_drain $session >/dev/null
+    zpty -w -n $session $'print -r -- __zsh_mb_ready__\r'
+    local startup_buf
+    startup_buf=$(zpty_drain $session 20 300)
+    if [[ $startup_buf != *__zsh_mb_ready__* ]]; then
+        fail_test "multibyte cursor/delete test setup" "shell did not accept a readiness command; got: ${(qq)startup_buf}"
         zpty -d $session 2>/dev/null
         return
     fi
+    zpty -w -n $session "module_path=($BINDIR "'$module_path); zmodload zsh/zle; bindkey -e; bindkey -M emacs "^M" accept-line; bindkey -M emacs "^J" accept-line; bindkey -M emacs "^A" beginning-of-line; bindkey -M emacs "^F" forward-char; bindkey -M emacs "^B" backward-char; bindkey -M emacs "^?" backward-delete-char; bindkey -M emacs "^[[200~" bracketed-paste'$'\r'
+    zpty_drain $session >/dev/null
 
     # Insertion: type X=A<中>B, jump to line start (^A), step over "X=A"
     # with three forward-chars (^F), then ONE MORE forward-char -- if the
@@ -574,7 +677,7 @@ test_multibyte_cursor_and_delete() {
     # Terminals wrap pasted text in bracketed-paste markers. Keep those
     # markers bound after user keymap changes so a fast paste is inserted
     # literally instead of being interpreted as editing commands.
-    zpty -w -n $session $'bindkey -M emacs "^[[200~" self-insert\r'
+    zpty -w -n $session $'bindkey -M emacs "^[[200~" bracketed-paste\r'
     zpty_drain $session >/dev/null
     local paste_result=$(mb_probe $session $'X=\e[200~git@github.com:raliclo/zsh.git\e[201~\r')
 
@@ -608,7 +711,12 @@ test_multibyte_cursor_and_delete() {
 # warned. Guard the fix two ways: the ordering in compile.sh, and (when MSYS2
 # is present) that creating that /tmp does suppress the startup warning. ------
 test_msys2_tmp_startup() {
-    local repo=${BINDIR:h:h}
+    local repo
+    if [[ -n $TEST_REPO_ROOT ]]; then
+        repo=$TEST_REPO_ROOT
+    else
+        repo=${BINDIR:h:h}
+    fi
     local compile=$repo/helper/compile.sh
     if [[ ! -f $compile ]]; then
         fail_test "compile.sh creates \$MSYS2_ROOT/tmp before launching bash" "compile.sh not found at $compile"
@@ -654,6 +762,9 @@ test_msys2_tmp_startup() {
 }
 
 test_multiline_c
+test_public_zsh_exe_preserves_pipe_regex
+test_nested_perl_dollars_survive_with_shell_quoting
+test_arithmetic_increment_is_err_exit_safe
 test_pipe_in_quotes
 test_embedded_quotes
 test_nomatch_disabled_for_regex_args
@@ -666,6 +777,7 @@ test_portable_usr_bin_tools
 test_xterm_terminfo_bundled
 test_bracket_tool_lookup
 test_windows_exe_wrappers
+test_javascript_wrappers_preserve_slash_prefixed_argv
 test_utf8_filename_roundtrip
 test_user_lc_all_is_sanitized
 test_modules_load
