@@ -341,8 +341,16 @@ int main(void) {
      *    original caller's value instead of clobbering it;
      * 3. USERPROFILE. */
     wchar_t origZdotdir[MAX_PATH];
+    wchar_t inheritedPortableDir[MAX_PATH];
     DWORD zdlen = GetEnvironmentVariableW(L"ZDOTDIR", origZdotdir, MAX_PATH);
-    if (zdlen > 0 && zdlen < MAX_PATH && _wcsicmp(origZdotdir, dir) != 0) {
+    DWORD pdirLen = GetEnvironmentVariableW(L"ZSH_PORTABLE_DIR",
+                                             inheritedPortableDir, MAX_PATH);
+    int zdotdirIsPortable =
+        zdlen > 0 && zdlen < MAX_PATH &&
+        (_wcsicmp(origZdotdir, dir) == 0 ||
+         (pdirLen > 0 && pdirLen < MAX_PATH &&
+          _wcsicmp(origZdotdir, inheritedPortableDir) == 0));
+    if (zdlen > 0 && zdlen < MAX_PATH && !zdotdirIsPortable) {
         SetEnvironmentVariableW(L"ZSH_ORIG_ZDOTDIR", origZdotdir);
     } else {
         DWORD origLen = GetEnvironmentVariableW(L"ZSH_ORIG_ZDOTDIR",

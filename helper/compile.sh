@@ -362,14 +362,15 @@ EOF_FSTAB
     # Bundle MSYS tools the portable runtime expects to win over Windows,
     # BusyBox, Git-for-Windows, or other sh environments on PATH. This covers
     # every currently-detected BusyBox-backed Scoop shim that also has an
-    # MSYS2 /usr/bin/<tool>.exe equivalent, plus terminal helpers used by zsh.
-    # ps must be the MSYS/Cygwin one with -W support, not BusyBox ps.
+    # MSYS2 /usr/bin/<tool>.exe equivalent, plus terminal/process helpers
+    # used by zsh. ps must be the MSYS/Cygwin one with -W support, not
+    # BusyBox ps; procps-ng/psmisc provide pgrep/pkill/pidof/killall.
     for tool in '[' ar arch ash awk base32 base64 basename bash cal cat chattr \
         chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
         expand expr factor false find flock fold getopt grep groups gzip \
-        head hexdump id install join kill less link ln locale logname ls \
+        head hexdump id install join kill killall less link ln locale logname ls \
         lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od \
-        paste perl printenv ps pwd readlink realpath reset rev rm rmdir sed \
+        paste perl pgrep pidof pkill printenv ps pwd readlink realpath reset rev rm rmdir sed \
         seq sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort \
         split stat strings stty sum sync tac tail tar tee test time timeout \
         touch tr true truncate tset tsort uname unexpand uniq unlink unlzma \
@@ -430,10 +431,12 @@ EOF_FSTAB
         cp -R /usr/share/perl5 bin/usr/share/
     fi
 
-    # MSYS derives its POSIX root from the executable/DLL layout. Keep a copy
-    # of the real interpreter and runtime DLLs under usr/bin so absolute
-    # shebangs such as /usr/bin/env resolve inside the portable package rather
-    # than under the parent Scoop apps directory.
+    # MSYS derives its POSIX root from the executable/DLL layout. Keep the real
+    # interpreter and runtime DLLs under usr/bin so absolute shebangs such as
+    # /usr/bin/env resolve inside the portable package rather than under the
+    # parent Scoop apps directory. The public root zsh.exe is replaced by the
+    # native launcher below; direct callers get argv-preserving behavior, while
+    # the MSYS-linked interpreter stays available as usr/bin/zsh.exe.
     mkdir -p bin/usr/bin
     cp bin/zsh.exe bin/usr/bin/zsh.exe
     cp bin/*.dll bin/usr/bin/
@@ -447,8 +450,10 @@ EOF_FSTAB
     # be a native Windows PE binary, not an MSYS binary: an MSYS-linked loader
     # re-enters the runtime's child-copy protocol when invoked from zsh and
     # nested shells can fail before main() with a signal-pipe creation error.
-    # Package it as zsh-loader.exe and let the Scoop shim named zsh point at it.
-    echo '==> Compiling native launcher (bin/zsh-loader.exe -> zsh.exe)...'
+    # Package it as zsh-loader.exe and also copy it to root zsh.exe. Users and
+    # tools sometimes call apps/zsh/current/zsh.exe directly, bypassing the
+    # Scoop shim; that path must be the native argv-preserving launcher too.
+    echo '==> Compiling native launcher (bin/zsh-loader.exe and bin/zsh.exe)...'
     NATIVE_CLANG=/clang64/bin/clang.exe
     if [ ! -x \"\$NATIVE_CLANG\" ]; then
         echo 'error: native Clang not found at /clang64/bin/clang.exe' >&2
@@ -466,6 +471,7 @@ EOF_FSTAB
         echo 'error: zsh-loader.exe unexpectedly imports msys-2.0.dll' >&2
         exit 1
     fi
+    cp bin/zsh-loader.exe bin/zsh.exe
 "
 
 # Run the assembled build script under MSYS2 bash. Normally direct. But if
@@ -502,6 +508,7 @@ fi
 cat > "$BUILD/bin/zsh.cmd" <<'EOF_CMD'
 @echo off
 setlocal EnableDelayedExpansion
+set "_ZSH_INHERITED_PORTABLE=%ZSH_PORTABLE_DIR%"
 set "ZSH_PORTABLE_DIR=%~dp0"
 rem Strip %~dp0's trailing backslash so the value matches the form the
 rem native launcher (zsh-loader.exe) uses -- nested sessions compare
@@ -551,7 +558,10 @@ rem portable dir inherited from an enclosing session wins even when
 rem nested; otherwise an inherited ZSH_ORIG_ZDOTDIR is kept (we're
 rem nested -- don't clobber the original caller's value); otherwise
 rem fall back to USERPROFILE.
-if defined ZDOTDIR if /I not "%ZDOTDIR%"=="%ZSH_PORTABLE_DIR%" set "ZSH_ORIG_ZDOTDIR=%ZDOTDIR%"
+if not defined _ZSH_INHERITED_PORTABLE set "_ZSH_INHERITED_PORTABLE=%ZSH_PORTABLE_DIR%"
+if defined ZDOTDIR if /I "%ZDOTDIR%"=="%_ZSH_INHERITED_PORTABLE%" set "_ZSH_ZDOTDIR_IS_PORTABLE=1"
+if defined ZDOTDIR if /I "%ZDOTDIR%"=="%ZSH_PORTABLE_DIR%" set "_ZSH_ZDOTDIR_IS_PORTABLE=1"
+if defined ZDOTDIR if not defined _ZSH_ZDOTDIR_IS_PORTABLE set "ZSH_ORIG_ZDOTDIR=%ZDOTDIR%"
 if not defined ZSH_ORIG_ZDOTDIR set "ZSH_ORIG_ZDOTDIR=%USERPROFILE%"
 set "ZDOTDIR=%ZSH_PORTABLE_DIR%"
 
@@ -643,6 +653,21 @@ function wsl.exe {
 wsl() {
   wsl.exe "$@"
 }
+zsh_portable_no_msys_arg_conv() {
+  local zsh_portable_cmd=$1
+  shift
+  MSYS2_ARG_CONV_EXCL='*' command "$zsh_portable_cmd" "$@"
+}
+node.exe() { zsh_portable_no_msys_arg_conv node.exe "$@" }
+node() { zsh_portable_no_msys_arg_conv node "$@" }
+npm() { zsh_portable_no_msys_arg_conv npm "$@" }
+npx() { zsh_portable_no_msys_arg_conv npx "$@" }
+pnpm() { zsh_portable_no_msys_arg_conv pnpm "$@" }
+yarn() { zsh_portable_no_msys_arg_conv yarn "$@" }
+bun.exe() { zsh_portable_no_msys_arg_conv bun.exe "$@" }
+bun() { zsh_portable_no_msys_arg_conv bun "$@" }
+deno.exe() { zsh_portable_no_msys_arg_conv deno.exe "$@" }
+deno() { zsh_portable_no_msys_arg_conv deno "$@" }
 killwin() {
   if (( $# == 0 )); then
     print -u2 "usage: killwin WINPID [...]"
@@ -762,6 +787,6 @@ echo "==> Build complete. Output kept in: $BUILD"
 echo "==> Portable runtime: $BUILD/bin"
 echo "==>   zsh.cmd        - interactive launcher for cmd.exe / double-click"
 echo "==>   zsh-loader.exe - native launcher for programmatic callers (preserves argv exactly)"
-echo "==>   zsh.exe        - the real interpreter zsh.cmd/zsh-loader.exe both forward to"
+echo "==>   zsh.exe        - public native launcher; real interpreter is usr/bin/zsh.exe"
 "$BUILD/bin/zsh.cmd" --version
 echo "==> For dynamic modules (zle etc.) outside MSYS2, run $BUILD/bin/zsh.cmd or zsh-loader.exe"
