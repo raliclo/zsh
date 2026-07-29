@@ -185,6 +185,11 @@ The launcher/bootstrap also:
   like POSIX shells. This prevents regex arguments such as
   `(run_round|encode-win|decode-win|rss-win|lzfse|swift_tar)` from aborting
   before tools such as `grep`, `rg`, or PowerShell receive them;
+- preserves the `-c` argument when launched through `zsh-loader.exe` or the
+  packaged root `zsh.exe`, but the resulting text is still parsed by zsh. If
+  the script embeds another language snippet that uses `$variables` (Perl,
+  AWK, etc.), quote that nested snippet for zsh, for example `perl -ne '...$x...'`,
+  or escape each `$` inside double quotes;
 - prepends `build/bin` to `PATH`, then pushes `%SystemRoot%\System32`,
   `SysWOW64`, and `%SystemRoot%` itself to the very end of `PATH` — those
   ship their own `find`/`sort`/`more`/`where`/... with non-POSIX behavior
@@ -202,6 +207,11 @@ The launcher/bootstrap also:
 - defines `wsl` and `wsl.exe` wrappers that disable MSYS argument conversion
   only for that native Windows command, so WSL paths such as `/mnt/c/...` and
   native options such as `--cd` are passed to `wsl.exe` unchanged;
+- defines JavaScript runtime/test wrappers (`node`, `node.exe`, `npm`, `npx`,
+  `pnpm`, `yarn`, `bun`, `deno`, and `.exe` variants where relevant) that
+  disable MSYS argument conversion for those native Windows commands. This
+  preserves literal slash-prefixed test data such as e-invoice barcodes
+  (`/AB12+-.`) instead of rewriting them as paths under the zsh install root;
 - defines `killwin WINPID [...]`, a convenience wrapper around
   `taskkill /PID <WINPID> /F`; use it with the `WINPID` column from
   `ps -eW`, since zsh/MSYS `kill` expects the separate internal PID column;
