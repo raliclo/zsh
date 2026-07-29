@@ -1,8 +1,34 @@
 #!/usr/bin/env zsh
 set -eu
+
+if [[ -n ${1:-} ]]; then
+    bindir=${1//\\//}
+    if [[ $bindir == [A-Za-z]:/* ]]; then
+        bindir="/${(L)bindir[1]}/${bindir[4,-1]}"
+    fi
+    module_path=($bindir $module_path)
+    unset bindir
+fi
+
 zmodload -F zsh/files b:mkdir b:rm b:chmod
 
-repo=${0:A:h:h:h}
+if [[ -n ${2:-} ]]; then
+    repo=${2//\\//}
+    if [[ $repo == [A-Za-z]:/* ]]; then
+        repo="/${(L)repo[1]}/${repo[4,-1]}"
+    else
+        repo=${repo:A}
+    fi
+else
+    script_path=${0//\\//}
+    if [[ $script_path == [A-Za-z]:/* ]]; then
+        script_path="/${(L)script_path[1]}/${script_path[4,-1]}"
+    else
+        script_path=${script_path:A}
+    fi
+    repo=${script_path:h:h:h}
+    unset script_path
+fi
 script=$repo/helper/msys2_scoop_shims.sh
 tmp=$repo/build/tmp/zsh-msys2-scoop-shims-test.$$
 
@@ -16,9 +42,9 @@ mkdir -p -- "$tmp/scoop/apps/msys2/current/usr/bin" "$tmp/scoop/shims"
 tools=('[' ar arch ash awk base32 base64 basename bash cal cat chattr
     chmod cksum clear cmp comm cp cut date dd df diff dirname du env
     echo expand expr factor false find flock fold getopt grep groups gzip
-    head hexdump id install join kill less link ln locale logname ls
+    head hexdump id install join kill killall less link ln locale logname ls
     lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od
-    paste perl printenv printf ps pwd readlink realpath reset rev rm rmdir
+    paste perl pgrep pidof pkill printenv printf ps pwd readlink realpath reset rev rm rmdir
     sed seq sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort
     split stat strings stty sum sync tac tail tar tee test time timeout touch
     tr true truncate tset tsort uname unexpand uniq unlink unlzma unxz
@@ -56,13 +82,16 @@ for tool in "${tools[@]}"; do
         src="$tmp/scoop/apps/msys2/current/usr/bin/$tool"
         print -r -- '#!/bin/sh' > "$src"
         print -r -- 'exit 0' >> "$src"
+    elif [[ $tool == pgrep ]]; then
+        src=
     else
         src="$tmp/scoop/apps/msys2/current/usr/bin/$tool.exe"
         : > "$src"
     fi
     : > "$tmp/scoop/shims/$tool.exe"
     print -r -- 'old ps1 wrapper' > "$tmp/scoop/shims/$tool-msys2.ps1"
-    chmod 755 "$src" "$tmp/scoop/shims/$tool.exe"
+    [[ -z $src ]] || chmod 755 "$src"
+    chmod 755 "$tmp/scoop/shims/$tool.exe"
 done
 
 (
@@ -102,6 +131,14 @@ for tool in "${tools[@]}"; do
     if is_script_tool "$tool"; then
         expected_path="/apps/msys2/current/usr/bin/$tool"
         expected_launcher="/apps/msys2/current/usr/bin/sh.exe"
+    elif [[ $tool == pgrep ]]; then
+        expected_path="/shims/pgrep-msys2.sh"
+        expected_launcher="/apps/msys2/current/usr/bin/sh.exe"
+        if [[ "$(<"$tmp/scoop/shims/pgrep-msys2.sh")" != *"ps.exe"* ||
+              "$(<"$tmp/scoop/shims/pgrep-msys2.sh")" != *"awk.exe"* ]]; then
+            print -ru2 -- "wrong pgrep compatibility script: $(<"$tmp/scoop/shims/pgrep-msys2.sh")"
+            missing=1
+        fi
     else
         expected_path="/apps/msys2/current/usr/bin/$tool.exe"
         expected_launcher=$expected_path

@@ -24,9 +24,9 @@ for file in "${(f)ZTST_testlist}"; do
   $ZTST_exe +Z -f $ZTST_srcdir/ztst.zsh $file
   retval=$?
   if (( $retval == 2 )); then
-    (( skipped++ ))
+    (( ++skipped ))
   elif (( $retval )); then
-    (( failure++ ))
+    (( ++failure ))
     (( $retval > 128 )) && {
       [[ -n $ZTST_failcolour ]] && print -rnP "%F{$ZTST_failcolour}"
       print -r - "$file: test failed: SIG$signals[$retval - 127]."
@@ -34,7 +34,7 @@ for file in "${(f)ZTST_testlist}"; do
     }
     ffiles+=( $file )
   else
-    (( success++ ))
+    (( ++success ))
   fi
   print
 done
