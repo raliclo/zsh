@@ -126,19 +126,6 @@ fi
 PATH="$MSYS2_USR_BIN:$PATH"
 export PATH
 
-missing_build_tools=
-for tool in autoconf make gcc; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        missing_build_tools="$missing_build_tools $tool"
-    fi
-done
-if [ -n "$missing_build_tools" ]; then
-    echo "error: missing MSYS2 build tools:$missing_build_tools" >&2
-    echo "       run: zsh helper/install_build_tool.sh" >&2
-    echo "       checked MSYS2 root: $MSYS2_ROOT" >&2
-    exit 1
-fi
-
 # bash.exe probes the MSYS2 root /tmp at startup and prints
 #   bash.exe: warning: could not find /tmp, please create!
 # when it is missing (scoop's MSYS2 does not always create it). Create it from
@@ -155,6 +142,32 @@ fi
 # parent), not through the portable zsh. Same class as the '/'-resolution
 # limitation documented in helper/test/test_windows_packaging.zsh.
 mkdir -p "$MSYS2_ROOT/tmp"
+
+# Keep MSYS2 packages current before detecting/copying build and bundled tools.
+# This ensures build/release contents and build/bin/version.txt reflect the
+# latest packages available to this MSYS2 installation. Set
+# ZSH_SKIP_MSYS2_UPGRADE=1 for offline/repro-only builds.
+if [ "${ZSH_SKIP_MSYS2_UPGRADE:-}" != 1 ]; then
+    sh "$REPO/helper/msys2_upgrade.sh" "$MSYS2_ROOT"
+else
+    echo "==> Skipping MSYS2 package update (ZSH_SKIP_MSYS2_UPGRADE=1)"
+fi
+
+PATH="$MSYS2_USR_BIN:$PATH"
+export PATH
+
+missing_build_tools=
+for tool in autoconf make gcc; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        missing_build_tools="$missing_build_tools $tool"
+    fi
+done
+if [ -n "$missing_build_tools" ]; then
+    echo "error: missing MSYS2 build tools:$missing_build_tools" >&2
+    echo "       run: zsh helper/install_build_tool.sh" >&2
+    echo "       checked MSYS2 root: $MSYS2_ROOT" >&2
+    exit 1
+fi
 
 # --- Guard against CRLF-damaged checkouts ----------------------------------
 if [ -f "$SRC/configure.ac" ] && grep -q "$(printf '\r')" "$SRC/configure.ac"; then
@@ -329,6 +342,7 @@ _msys_build_script="
     DL_EXT=\$(sed -n 's/^DL_EXT[[:space:]]*=[[:space:]]*//p' Src/Makefile | head -1)
     rm -rf bin
     mkdir -p bin/etc bin/tmp
+    : > bin/.bundled-tool-versions.tmp
     cat > bin/etc/fstab <<'EOF_FSTAB'
 # Use MSYS2 short drive mounts such as /c/Users in the portable runtime.
 none / cygdrive binary,posix=0,noacl,user 0 0
@@ -365,6 +379,26 @@ EOF_FSTAB
     # MSYS2 /usr/bin/<tool>.exe equivalent, plus terminal/process helpers
     # used by zsh. ps must be the MSYS/Cygwin one with -W support, not
     # BusyBox ps; procps-ng/psmisc provide pgrep/pkill/pidof/killall.
+    record_bundled_tool_version() {
+        record_tool=\$1
+        record_path=\$2
+        record_version=
+        for record_opt in --version -V -v; do
+            record_candidate=\$(timeout 3s \"\$record_path\" \"\$record_opt\" </dev/null 2>&1 \\
+                | sed -n '/./{p;q;}')
+            if [ -n \"\$record_candidate\" ] && ! printf '%s\n' \"\$record_candidate\" \\
+                | grep -Eiq 'invalid|illegal|unknown|usage|missing operand|requires an argument'; then
+                record_version=\$record_candidate
+                break
+            fi
+        done
+        if [ -z \"\$record_version\" ]; then
+            record_version='version unavailable'
+        fi
+        printf '%s\t%s\t%s\n' \"\$record_tool\" \"\$record_path\" \"\$record_version\" \\
+            >> bin/.bundled-tool-versions.tmp
+    }
+
     for tool in '[' ar arch ash awk base32 base64 basename bash cal cat chattr \
         chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
         expand expr factor false find flock fold getopt grep groups gzip \
@@ -402,6 +436,7 @@ EOF_FSTAB
             if [ \"\$tool_kind\" = exe ]; then
                 cp \"\$tool_exe\" bin/
                 cp \"\$tool_exe\" \"bin/usr/bin/\$tool.exe\"
+                record_bundled_tool_version \"\$tool\" \"\$tool_exe\"
                 case \"\$tool\" in
                     sh)
                         mkdir -p bin/bin
@@ -413,6 +448,7 @@ EOF_FSTAB
                     | while read -r dll; do cp \"\$dll\" bin/; done
             else
                 cp \"\$tool_exe\" \"bin/usr/bin/\$tool\"
+                record_bundled_tool_version \"\$tool\" \"\$tool_exe\"
             fi
         fi
     done
@@ -768,7 +804,12 @@ done
 {
     "$BUILD/bin/zsh.cmd" --version
     git -C "$SRC" log -1 --format='%H'
+    if [ -s "$BUILD/bin/.bundled-tool-versions.tmp" ]; then
+        printf '\n%s\n' 'bundled tools:'
+        sort "$BUILD/bin/.bundled-tool-versions.tmp"
+    fi
 } > "$BUILD/bin/version.txt"
+rm -f "$BUILD/bin/.bundled-tool-versions.tmp"
 echo "==> version.txt:"
 cat "$BUILD/bin/version.txt"
 

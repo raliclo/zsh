@@ -305,6 +305,32 @@ test_portable_usr_bin_tools() {
     fi
 }
 
+# --- version.txt must identify the zsh build and the versions of bundled
+# tools copied into the portable runtime, so package contents are auditable. --
+test_version_txt_records_bundled_tools() {
+    local version_file=$BINDIR/version.txt
+    local missing=()
+    if [[ ! -r $version_file ]]; then
+        fail_test "version.txt records bundled tool versions" "missing $version_file"
+        return
+    fi
+    if ! grep -qx 'bundled tools:' $version_file; then
+        fail_test "version.txt records bundled tool versions" "missing bundled tools section"
+        return
+    fi
+    local tool
+    for tool in grep find tar perl autoconf ps; do
+        if ! grep -qE "^${tool}"$'\t' $version_file; then
+            missing+=($tool)
+        fi
+    done
+    if (( $#missing == 0 )); then
+        pass_test "version.txt records bundled tool versions"
+    else
+        fail_test "version.txt records bundled tool versions" "missing tools: ${(j:,:)missing}"
+    fi
+}
+
 # --- terminfo must be present and usable for common terminals. If the
 # packaged app is missing share/terminfo, zsh starts with
 # "can't find terminal definition for xterm-256color" and every tput call
@@ -761,6 +787,20 @@ test_msys2_tmp_startup() {
     fi
 }
 
+test_compile_runs_msys2_upgrade_helper() {
+    local compile=$TEST_REPO_ROOT/helper/compile.sh
+    if [[ -z $TEST_REPO_ROOT || ! -f $compile ]]; then
+        fail_test "compile.sh runs the MSYS2 upgrade helper" "compile.sh not found at $compile"
+        return
+    fi
+    if grep -q 'helper/msys2_upgrade.sh' $compile &&
+       grep -q 'ZSH_SKIP_MSYS2_UPGRADE' $compile; then
+        pass_test "compile.sh runs the MSYS2 upgrade helper"
+    else
+        fail_test "compile.sh runs the MSYS2 upgrade helper" "missing helper invocation or skip flag"
+    fi
+}
+
 test_multiline_c
 test_public_zsh_exe_preserves_pipe_regex
 test_nested_perl_dollars_survive_with_shell_quoting
@@ -774,6 +814,7 @@ test_startup_cwd
 test_msys_drive_prefix
 test_tar_bundled
 test_portable_usr_bin_tools
+test_version_txt_records_bundled_tools
 test_xterm_terminfo_bundled
 test_bracket_tool_lookup
 test_windows_exe_wrappers
@@ -787,6 +828,7 @@ test_path_system32_last
 test_pid_is_real_winpid
 test_multibyte_cursor_and_delete
 test_msys2_tmp_startup
+test_compile_runs_msys2_upgrade_helper
 
 print
 print "Results: $pass passed, $fail failed"
