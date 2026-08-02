@@ -7,6 +7,13 @@
 # This intentionally runs pacman through MSYS2 bash via a native cmd.exe
 # boundary when available. Launching one MSYS runtime directly from another
 # unrelated MSYS runtime can corrupt the child process mount table on Windows.
+#
+# Do not run a full `pacman -Syu` from compile.sh. If msys2-runtime itself is
+# upgraded, MSYS2 terminates every running MSYS process to complete the update,
+# including the shell executing compile.sh. This helper refreshes package
+# databases and upgrades/installs only the packages required by this portable
+# build. Run a full MSYS2 system upgrade manually as a separate maintenance
+# step, then start a fresh compile.
 
 set -e
 
@@ -83,11 +90,11 @@ upgrade_script=$MSYS2_ROOT/tmp/zsh_msys2_upgrade.$$.sh
 cat > "$upgrade_script" <<'EOF_UPGRADE'
 set -e
 export PATH=/usr/bin:/clang64/bin:$PATH
-pacman --noconfirm -Syu
+pacman --noconfirm -Sy
 pacman --noconfirm -S --needed \
   gcc make autoconf automake ncurses-devel mingw-w64-clang-x86_64-clang \
-  coreutils diffutils findutils gawk grep gzip m4 make man-db ncurses \
-  perl procps-ng psmisc sed tar util-linux wget which xz
+  coreutils diffutils findutils gawk gnu-netcat grep gzip m4 make man-db ncurses \
+  openssl perl procps-ng psmisc sed tar util-linux vim wget which xz
 EOF_UPGRADE
 
 echo "==> Updating MSYS2 packages for zsh build..."
