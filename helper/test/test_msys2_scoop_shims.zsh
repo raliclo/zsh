@@ -44,11 +44,11 @@ tools=('[' ar arch ash awk base32 base64 basename bash cal cat chattr
     echo expand expr factor false find flock fold getopt grep groups gzip
     head hexdump id install join kill killall less link ln locale logname ls
     lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od
-    paste perl pgrep pidof pkill printenv printf ps pwd readlink realpath reset rev rm rmdir
+    nc openssl paste perl pgrep pidof pkill printenv printf ps pwd readlink realpath reset rev rm rmdir
     sed seq sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort
     split stat strings stty sum sync tac tail tar tee test time timeout touch
     tr true truncate tset tsort uname unexpand uniq unlink unlzma unxz
-    uuidgen wc wget which whoami xargs xzcat yes infocmp tput
+    uuidgen wc wget which whoami xargs xxd xzcat yes infocmp tput
     autoconf autoconf-2.13 autoconf-2.69 autoconf-2.71 autoconf-2.72
     autoconf-2.73 autoheader autoheader-2.13 autoheader-2.69
     autoheader-2.71 autoheader-2.72 autoheader-2.73 autom4te
@@ -93,6 +93,7 @@ for tool in "${tools[@]}"; do
     [[ -z $src ]] || chmod 755 "$src"
     chmod 755 "$tmp/scoop/shims/$tool.exe"
 done
+rm -f -- "$tmp/scoop/shims/openssl.exe"
 
 (
     emulate -L zsh
@@ -107,6 +108,11 @@ missing=0
 for tool in "${tools[@]}"; do
     shim=$tmp/scoop/shims/$tool.shim
     wrapper=$tmp/scoop/shims/$tool-msys2.cmd
+    runner=$tmp/scoop/shims/$tool.exe
+    if [[ ! -f $runner ]]; then
+        print -ru2 -- "missing shim runner: $runner"
+        missing=1
+    fi
     if [[ ! -f $shim ]]; then
         print -ru2 -- "missing shim metadata: $shim"
         missing=1
