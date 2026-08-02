@@ -32,11 +32,11 @@ if [ "$#" -eq 0 ]; then
         echo expand expr factor false find flock fold getopt grep groups gzip \
         head hexdump id install join kill killall less link ln locale logname ls \
         lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od \
-        paste perl pgrep pidof pkill printenv printf ps pwd readlink realpath reset rev rm \
+        nc openssl paste perl pgrep pidof pkill printenv printf ps pwd readlink realpath reset rev rm \
         rmdir sed seq sh sha1sum sha256sum sha384sum sha512sum shred shuf \
         sleep sort split stat strings stty sum sync tac tail tar tee test \
         time timeout touch tr true truncate tset tsort uname unexpand uniq \
-        unlink unlzma unxz uuidgen wc wget which whoami xargs xzcat yes \
+        unlink unlzma unxz uuidgen wc wget which whoami xargs xxd xzcat yes \
         infocmp tput \
         autoconf autoconf-2.13 autoconf-2.69 autoconf-2.71 autoconf-2.72 \
         autoconf-2.73 autoheader autoheader-2.13 autoheader-2.69 \
@@ -105,6 +105,14 @@ CMD_EXE=$(to_windows_path "$(cmd_exe_path)")
 echo "MSYS2 bin: $MSYS2_BIN"
 echo "Scoop shims: $SHIM_DIR"
 
+shim_runner_template=
+for candidate in sh bash grep xxd nc; do
+    if [ -f "$SHIM_DIR/$candidate.exe" ]; then
+        shim_runner_template="$SHIM_DIR/$candidate.exe"
+        break
+    fi
+done
+
 for tool do
     src="$MSYS2_BIN/$tool.exe"
     src_kind=exe
@@ -146,8 +154,12 @@ for tool do
         continue
     fi
     if [ ! -f "$runner" ]; then
-        echo "skip: $tool (missing Scoop shim runner $runner)" >&2
-        continue
+        if [ -n "$shim_runner_template" ]; then
+            cp "$shim_runner_template" "$runner"
+        else
+            echo "skip: $tool (missing Scoop shim runner $runner)" >&2
+            continue
+        fi
     fi
 
     src_win=$(to_windows_path "$src")
