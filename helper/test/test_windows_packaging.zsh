@@ -280,7 +280,7 @@ test_portable_usr_bin_tools() {
         mkdir -p -- $tmp || { print mkdir_tmp_failed; exit 20; }
         cd -- $tmp || { print cd_tmp_failed; exit 21; }
         test -x /usr/bin/env || { print env_missing; exit 22; }
-        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv which make sha256sum pgrep pkill pidof killall m4 perl autoconf autom4te autoheader autoreconf; do
+        for tool in ls locale stty reset tset infocmp tput du mkdir cp rm mv nc openssl xxd which make sha256sum pgrep pkill pidof killall m4 perl autoconf autom4te autoheader autoreconf; do
             whence -p "$tool" | grep -E "(/zsh/current|build/bin|usr/bin)" >/dev/null || { print -r -- "missing_or_shadowed:$tool"; exit 10; }
         done &&
         autoconf --version >/dev/null || { print autoconf_failed; exit 26; }
@@ -319,7 +319,7 @@ test_version_txt_records_bundled_tools() {
         return
     fi
     local tool
-    for tool in grep find tar perl autoconf ps; do
+    for tool in grep find tar perl autoconf ps nc openssl xxd; do
         if ! grep -qE "^${tool}"$'\t' $version_file; then
             missing+=($tool)
         fi
