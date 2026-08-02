@@ -403,12 +403,12 @@ EOF_FSTAB
         chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
         expand expr factor false find flock fold getopt grep groups gzip \
         head hexdump id install join kill killall less link ln locale logname ls \
-        lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od \
-        paste perl pgrep pidof pkill printenv ps pwd readlink realpath reset rev rm rmdir sed \
+        lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nc nl nproc od \
+        openssl paste perl pgrep pidof pkill printenv ps pwd readlink realpath reset rev rm rmdir sed \
         seq sh sha1sum sha256sum sha384sum sha512sum shred shuf sleep sort \
         split stat strings stty sum sync tac tail tar tee test time timeout \
         touch tr true truncate tset tsort uname unexpand uniq unlink unlzma \
-        unxz uuidgen wc wget which whoami xargs xzcat yes infocmp tput \
+        unxz uuidgen wc wget which whoami xargs xxd xzcat yes infocmp tput \
         autoconf autoconf-2.13 autoconf-2.69 autoconf-2.71 autoconf-2.72 \
         autoconf-2.73 autoheader autoheader-2.13 autoheader-2.69 \
         autoheader-2.71 autoheader-2.72 autoheader-2.73 autom4te \
