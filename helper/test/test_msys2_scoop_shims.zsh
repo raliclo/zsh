@@ -40,7 +40,7 @@ trap cleanup EXIT INT TERM
 mkdir -p -- "$tmp/scoop/apps/msys2/current/usr/bin" "$tmp/scoop/shims"
 
 tools=('[' ar arch ash awk base32 base64 basename bash cal cat chattr
-    chmod cksum clear cmp comm cp cut date dd df diff dirname du env
+    chmod cksum clear cmp comm cp cut date dd df diff dirname du env file
     echo expand expr factor false find flock fold getopt grep groups gzip
     head hexdump id install join kill killall less link ln locale logname ls
     lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od
