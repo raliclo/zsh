@@ -28,7 +28,7 @@ if [ "$#" -eq 0 ]; then
     # scalar variables on spaces by default, so TOOLS="diff grep ..." would
     # become one literal tool name when this helper is sourced from zsh.
     set -- '[' ar arch ash awk base32 base64 basename bash cal cat chattr \
-        chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
+        chmod cksum clear cmp comm cp cut date dd df diff dirname du env file \
         echo expand expr factor false find flock fold getopt grep groups gzip \
         head hexdump id install join kill killall less link ln locale logname ls \
         lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nl nproc od \

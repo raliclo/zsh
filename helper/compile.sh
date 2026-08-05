@@ -400,7 +400,7 @@ EOF_FSTAB
     }
 
     for tool in '[' ar arch ash awk base32 base64 basename bash cal cat chattr \
-        chmod cksum clear cmp comm cp cut date dd df diff dirname du env \
+        chmod cksum clear cmp comm cp cut date dd df diff dirname du env file \
         expand expr factor false find flock fold getopt grep groups gzip \
         head hexdump id install join kill killall less link ln locale logname ls \
         lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nc nl nproc od \
