@@ -389,6 +389,18 @@ int main(void) {
         SetEnvironmentVariableW(L"LANG", L"C.utf8");
     }
 
+    /* Cygwin's `ln -s` defaults to silently copying the target instead of
+     * creating a symlink when it can't get a native NTFS reparse point --
+     * no error, no warning, exit code 0. Any script or test fixture built
+     * with the default MSYS policy ends up with a plain file where it
+     * expects a symlink, and nothing downstream notices. `nativestrict`
+     * makes `ln -s` either create a real symlink or fail loudly, so a
+     * missing SeCreateSymbolicLinkPrivilege shows up as an error instead
+     * of a wrong-but-successful copy. Respect an explicit override. */
+    if (GetEnvironmentVariableW(L"MSYS", NULL, 0) == 0) {
+        SetEnvironmentVariableW(L"MSYS", L"winsymlinks:nativestrict");
+    }
+
     /* --- Console OUTPUT code page: switch to UTF-8, restore on exit.
      * Deliberately NOT SetConsoleCP() (the INPUT code page): Cygwin reads
      * console input as wide characters and decodes via the locale above,
