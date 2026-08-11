@@ -520,13 +520,23 @@ EOF_FSTAB
 # probe (test -d /tmp) is spawned the same way, so it detects the breakage.
 # ZSH_COMPILE_FORCE_CMD=1 forces the cmd.exe route unconditionally -- for
 # testing, or from a shell you already know corrupts the handover.
+#
+# The script is always handed over as a FILE, never as a -c string. When the
+# parent is a different msys-2.0.dll build (Git Bash spawning MSYS2's
+# bash.exe), the command line crossing that boundary is truncated at ~8KB
+# with no error: bash just runs the prefix it received. The assembled script
+# is well past that, and because the bundled-tool `for` list collapses into
+# one very long line, the cut landed mid-list and surfaced only as a bare
+# "syntax error: unexpected end of file from `for' command". A file argument
+# is a short path, so it cannot hit the limit.
+mkdir -p "$BUILD/tmp"
+_msys_script_file="$BUILD/tmp/compile_msys_build.sh"
+printf '%s\n' "$_msys_build_script" > "$_msys_script_file"
+
 if [ -z "${ZSH_COMPILE_FORCE_CMD:-}" ] && "$MSYS2_BASH" -c 'test -d /tmp' 2>/dev/null; then
-    "$MSYS2_BASH" -lc "$_msys_build_script"
+    "$MSYS2_BASH" -l "$_msys_script_file"
 else
     echo '==> MSYS2 /tmp unreachable (foreign msys runtime parent); relaunching bash via cmd.exe...'
-    mkdir -p "$BUILD/tmp"
-    _msys_script_file="$BUILD/tmp/compile_msys_build.sh"
-    printf '%s\n' "$_msys_build_script" > "$_msys_script_file"
     # cmd.exe needs a BACKSLASH exe path -- forward slashes make it mis-split
     # the path at each component (e.g. .../current -> a stray 'urrent'
     # command). bash then reads a forward-slash script path fine. And
