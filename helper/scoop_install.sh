@@ -132,9 +132,20 @@ TAR_EXE=$(find_windows_tar) || {
     exit 1
 }
 
-# Public download URL for scoop users: the git origin remote, develop branch.
+# Public download URL for scoop users: OUR fork's remote, develop branch.
 # (Requires build/release/zsh.zip to be committed and pushed on develop.)
-ORIGIN=$(git -C "$REPO" remote get-url origin | sed -e 's/\.git$//')
+#
+# Deliberately the 'ralic' remote, not 'origin': 'origin' is the upstream
+# repo this one was forked from (zsh-users/zsh), which carries no
+# build/release/zsh.zip, so deriving the URL from it would silently produce
+# a manifest pointing at a file that does not exist. Fall back to 'origin'
+# only for a clone that predates the remote split.
+if git -C "$REPO" remote get-url ralic >/dev/null 2>&1; then
+    FORK_REMOTE=ralic
+else
+    FORK_REMOTE=origin
+fi
+ORIGIN=$(git -C "$REPO" remote get-url "$FORK_REMOTE" | sed -e 's/\.git$//')
 PUBLIC_URL=$(printf '%s' "$ORIGIN" \
     | sed -e 's#github\.com#raw.githubusercontent.com#')/develop/build/release/zsh.zip
 
