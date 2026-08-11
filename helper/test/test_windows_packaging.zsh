@@ -749,14 +749,32 @@ test_msys2_tmp_startup() {
         return
     fi
     # Ordering guard: the mkdir of the MSYS2 root /tmp must come before the
-    # first `"$MSYS2_BASH" -lc` invocation, else bash warns before it runs.
+    # first `"$MSYS2_BASH"` invocation of any kind, else bash warns before it
+    # runs. Matching any '-' switch rather than a specific one: the build
+    # script is handed over as a file ("-l <file>") rather than a -c string
+    # (the cross-runtime command line truncates at ~8KB), and the /tmp probe
+    # ahead of it spawns bash as "-c" -- both must come after the mkdir.
     local mkdir_ln bash_ln
     mkdir_ln=$(grep -nE 'mkdir -p "\$MSYS2_ROOT/tmp"' $compile | head -1 | cut -d: -f1)
-    bash_ln=$(grep -nE '"\$MSYS2_BASH" -lc' $compile | head -1 | cut -d: -f1)
+    bash_ln=$(grep -nE '"\$MSYS2_BASH" -' $compile | head -1 | cut -d: -f1)
     if [[ -n $mkdir_ln && -n $bash_ln && $mkdir_ln -lt $bash_ln ]]; then
         pass_test "compile.sh creates \$MSYS2_ROOT/tmp before launching bash (line $mkdir_ln < $bash_ln)"
     else
         fail_test "compile.sh creates \$MSYS2_ROOT/tmp before launching bash" "mkdir line='$mkdir_ln' bash line='$bash_ln'"
+    fi
+
+    # The assembled build script must be handed to MSYS2 bash as a FILE, never
+    # as a -c string. Git Bash spawning MSYS2's bash.exe crosses an
+    # msys-2.0.dll boundary that silently truncates the command line at ~8KB;
+    # the script is well past that, so bash would run only the prefix. It
+    # surfaced as a bare "syntax error: unexpected end of file from `for'"
+    # once the bundled-tool list grew, after quietly packaging a partial
+    # runtime. Guarding statically because a truncated build still exits 0.
+    if grep -qE '"\$MSYS2_BASH" -lc "\$_msys_build_script"' $compile; then
+        fail_test "compile.sh hands the build script to bash as a file" \
+            "found a -c string handover, which truncates at ~8KB"
+    else
+        pass_test "compile.sh hands the build script to bash as a file, not a -c string"
     fi
 
     # Functional check: reach MSYS2 bash through a NATIVE intermediary
