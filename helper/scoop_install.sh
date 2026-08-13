@@ -5,7 +5,7 @@
 # Prerequisite: sh helper/compile.sh  (produces build/bin)
 #
 # Usage (from Git Bash or any POSIX shell):
-#   sh helper/scoop_install.sh
+#   sh helper/scoop_install.sh [--package-only]
 #
 # What it does:
 #   1. Zips build/bin/*  ->  build/zsh-<version>-x64.zip
@@ -15,8 +15,20 @@
 #        - extracts to  ~/scoop/apps/zsh/<version>\   (+ 'current' junction)
 #        - creates the shim  ~/scoop/shims/zsh        (from zsh-loader.exe)
 #        - uses the packaged .zshenv bootstrap so zsh finds dynamic modules
+#
+# --package-only stops after step 2: it refreshes the zip and the manifest
+# hash (which have to be regenerated together, since the manifest pins the
+# zip's sha256) but leaves the currently installed zsh alone. Use it when
+# preparing a commit without disturbing a working install -- steps 3 and 4
+# uninstall and reinstall, which would interrupt anything running zsh.
 
 set -e
+
+PACKAGE_ONLY=
+if [ "$1" = "--package-only" ]; then
+    PACKAGE_ONLY=1
+    shift
+fi
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 BUILD="$REPO/build"
@@ -117,10 +129,12 @@ if [ ! -f "$BUILD/bin/zsh.cmd" ] || { [ ! -f "$BUILD/bin/zsh/zle.so" ] && [ ! -f
     echo "error: build/bin is missing zsh.cmd or zsh/zle module; rerun helper/compile.sh" >&2
     exit 1
 fi
-command -v scoop >/dev/null 2>&1 || {
-    echo "error: scoop not found; run helper/install_build_tool.sh first" >&2
-    exit 1
-}
+if [ -z "$PACKAGE_ONLY" ]; then
+    command -v scoop >/dev/null 2>&1 || {
+        echo "error: scoop not found; run helper/install_build_tool.sh first" >&2
+        exit 1
+    }
+fi
 
 VERSION=$("$BUILD/bin/zsh.exe" --version | awk '{print $2}')
 RELEASE="$BUILD/release"
@@ -193,6 +207,15 @@ echo "==> Wrote $BUCKET/zsh.json (url: $PUBLIC_URL)"
 mkdir -p "$BUILD/local-manifest"
 sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/release/zsh.zip\"#" \
     "$BUCKET/zsh.json" > "$BUILD/local-manifest/zsh.json"
+
+if [ -n "$PACKAGE_ONLY" ]; then
+    echo "==> --package-only: zip and manifest refreshed; install left untouched."
+    echo "    Install it yourself with:"
+    echo "      sh helper/scoop_install.sh"
+    echo "    or directly from the local manifest:"
+    echo "      scoop install '$REPO_WIN/build/local-manifest/zsh.json'"
+    exit 0
+fi
 
 # --- 3. Install through scoop ------------------------------------------------
 stop_zsh_processes
