@@ -1,6 +1,10 @@
-# sha256 checksums of the pristine (unpatched) files that
-# windows-zle-surrogate-pairs.patch was written against.
+# sha256 checksums of the pristine (unpatched) files that the patches
+# in helper/patches/ were written against.
+#   zle.h, zle_move.c -> windows-zle-surrogate-pairs.patch
+#   hist.c, subst.c   -> windows-drive-abspath.patch
 # Verified with: sha256sum -c helper/patches/checksum.txt
-# generated: 2026-08-15T16:43:05Z
+# generated: 2026-08-15T17:32:56Z
 28da9e955887b07514082855a29933c26c732a2795c05c7d17924bd850ac258f *Src/Zle/zle.h
 dc185d2ac3c45bebd98216dc573dabd7789184a17645898eec3b781c6a03f0bc *Src/Zle/zle_move.c
+8870647f75ad8b783b40645ddc114070f05c3780e768e0fe5367cd1e65435c7b *Src/hist.c
+cebfd7fb38e4f3ea9d22839f67cf69dd331dc8e73681595b63405ddfed24aacc *Src/subst.c
