@@ -136,7 +136,55 @@ if [ -z "$PACKAGE_ONLY" ]; then
     }
 fi
 
-VERSION=$("$BUILD/bin/zsh.exe" --version | awk '{print $2}')
+# zsh's own version string never changes between builds of the same source
+# ("5.9.999.3-test"), so scoop saw every rebuild as already-installed:
+# `scoop update zsh` skipped it, `scoop install` refused it, and the stale
+# download stayed in the cache -- three symptoms of one cause, which is why
+# updating meant uninstall + cache rm + install every time.
+#
+# Append a build identity: <date>v<n>.<commit>. The date makes it obvious
+# how old an install is, the counter distinguishes rebuilds within one day,
+# and the commit ties the artifact back to the source it came from.
+#
+# Joined with '.' rather than '+' deliberately: under semver, everything
+# after '+' is build metadata and is IGNORED when comparing precedence, so
+# "...+20260816v1" and "...+20260816v2" could compare equal and scoop would
+# go on skipping the update -- reintroducing the exact bug this fixes.
+BASE_VERSION=$("$BUILD/bin/zsh.exe" --version | awk '{print $2}')
+BUILD_DATE=$(date +%Y%m%d)
+SHORT_SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
+
+# The counter restarts at v1 each new day. It is derived from the version
+# already in bucket/zsh.json rather than from local state, so it stays
+# correct across machines and clean checkouts -- the manifest is committed,
+# a scratch file would not be.
+# Parsed from the END, not the start: the base version contains dots and
+# digits of its own, so anchoring on it is fragile. The tail is always
+# .<8-digit date>v<counter>.<commit>, so strip the commit, then take the
+# final dot-separated field.
+PREV_VERSION=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$BUCKET/zsh.json" 2>/dev/null)
+PREV_DATE=
+PREV_SEQ=
+_datever=${PREV_VERSION%.*}     # drop .<commit>
+_datever=${_datever##*.}        # keep <date>v<counter>
+case "$_datever" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]v[0-9]*)
+        PREV_DATE=${_datever%%v*}
+        PREV_SEQ=${_datever#*v}
+        ;;
+esac
+case "$PREV_SEQ" in
+    ''|*[!0-9]*) PREV_SEQ= ;;
+esac
+
+if [ "$PREV_DATE" = "$BUILD_DATE" ] && [ -n "$PREV_SEQ" ]; then
+    BUILD_SEQ=$((PREV_SEQ + 1))
+else
+    BUILD_SEQ=1
+fi
+
+VERSION="$BASE_VERSION.${BUILD_DATE}v${BUILD_SEQ}.${SHORT_SHA}"
+echo "==> Build version: $VERSION"
 RELEASE="$BUILD/release"
 ZIP="$RELEASE/zsh.zip"
 REPO_WIN=$(to_windows_path "$REPO")   # Windows-style path (C:/...)
