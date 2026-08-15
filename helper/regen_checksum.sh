@@ -25,13 +25,22 @@ if grep -q ZSH_IS_HIGH_SURROGATE Src/Zle/zle.h 2>/dev/null; then
     echo "       or: git checkout -- Src/Zle/zle.h Src/Zle/zle_move.c" >&2
     exit 1
 fi
+if grep -q cygdrivepath Src/hist.c 2>/dev/null; then
+    echo "error: Src/hist.c has the drive-path patch applied right now;" >&2
+    echo "       checksum.txt must be generated from the pristine files. Revert" >&2
+    echo "       it first: git apply -R helper/patches/windows-drive-abspath.patch" >&2
+    echo "       or: git checkout -- Src/hist.c Src/subst.c" >&2
+    exit 1
+fi
 
 {
-    echo "# sha256 checksums of the pristine (unpatched) files that"
-    echo "# windows-zle-surrogate-pairs.patch was written against."
+    echo "# sha256 checksums of the pristine (unpatched) files that the patches"
+    echo "# in helper/patches/ were written against."
+    echo "#   zle.h, zle_move.c -> windows-zle-surrogate-pairs.patch"
+    echo "#   hist.c, subst.c   -> windows-drive-abspath.patch"
     echo "# Verified with: sha256sum -c helper/patches/checksum.txt"
     echo "# generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    sha256sum Src/Zle/zle.h Src/Zle/zle_move.c
+    sha256sum Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c
 } > helper/patches/checksum.txt
 
 echo "==> Wrote helper/patches/checksum.txt:"
