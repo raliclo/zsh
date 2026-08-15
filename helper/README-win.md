@@ -386,7 +386,37 @@ argument form that misbehaves from the shell in question to see the raw
   (see "compile.sh" above), but any *other* GNU coreutils command a script
   assumes (e.g. `sed`, `awk`, `grep`) is similarly not guaranteed to exist
   on a machine without MSYS2/Git for Windows on `PATH` unless it's bundled
-  the same way.
+  the same way. A command that is *not* in the bundled list does not simply
+  fail to be found — on a machine with Scoop it typically resolves to a
+  BusyBox shim instead, which may be a reduced applet or fail outright
+  (`bc` currently does: it is not bundled, and Scoop's BusyBox shim errors
+  with "Could not create process"). Add such tools to the bundled list in
+  `compile.sh` rather than relying on whatever `PATH` supplies.
+- **`zsh -n` reports `failed to load module 'zsh/watch'` (or another
+  module) when a script defines a function whose name is an autoloadable
+  builtin.** The common case is `log()`, since `log` is an autoloadable
+  builtin of `zsh/watch`. The check still exits 0 and the script runs
+  correctly — functions take precedence over builtins, verified even with
+  `zsh/watch` explicitly loaded — so this is stderr noise only.
+  Attempting the autoload while parsing is upstream behavior on every
+  platform; only the *failure* is specific to this build. On a normal
+  install the modules sit at the compiled-in default `module_path`, so the
+  load quietly succeeds. This runtime is relocatable, so its `module_path`
+  is set by the packaged `.zshenv` — and `-n` does not execute startup
+  files, so under `-n` `module_path` is only ever the compiled-in default,
+  which does not exist on Windows. The obvious fix — having
+  `zsh-loader.exe` export `MODULE_PATH` the way it does `TERMINFO` and
+  `ZDOTDIR` — is impossible: zsh refuses to import it, `Src/params.c`
+  ("MODULE_PATH is not imported for security reasons", `PM_DONTIMPORT`).
+  Not fixed: the only real fix is patching the default `module_path` to be
+  derived from the executable's location, which is a change to core module
+  loading and is not worth the risk for a cosmetic warning. Workaround if
+  the noise matters (e.g. `-n` used as a clean CI gate): rename the
+  function so it does not collide with an autoloadable builtin. Note that
+  such a collision is worth avoiding on its own merits — if the name is
+  called *before* the function is defined, the real builtin runs instead,
+  which on Linux fails in a confusing way rather than reporting an unknown
+  command.
 
 ## Known non-fatal warnings
 
