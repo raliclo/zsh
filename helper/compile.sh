@@ -716,13 +716,13 @@ deno.exe() { zsh_portable_no_msys_arg_conv deno.exe "$@" }
 deno() { zsh_portable_no_msys_arg_conv deno "$@" }
 killwin() {
   if (( $# == 0 )); then
-    print -u2 "usage: killwin WINPID [...]"
+    printf '%s\n' "usage: killwin WINPID [...]" >&2
     return 2
   fi
   local zsh_portable_pid zsh_portable_status=0
   for zsh_portable_pid in "$@"; do
     if [[ $zsh_portable_pid != <-> ]]; then
-      print -u2 "killwin: invalid WINPID: $zsh_portable_pid"
+      printf '%s\n' "killwin: invalid WINPID: $zsh_portable_pid" >&2
       zsh_portable_status=2
       continue
     fi
