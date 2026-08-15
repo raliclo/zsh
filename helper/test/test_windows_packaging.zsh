@@ -189,6 +189,37 @@ test_nomatch_disabled_for_regex_args() {
     fi
 }
 
+# --- Arguments AFTER the script name are the script's operands, and the
+# launcher must not reinterpret them as its own options. protect_command_arg
+# used to scan the whole of argv for a -c to protect, so a single-dash
+# operand that merely contained a 'c' (`-backup` -> b,a,c,k,u,p) looked like
+# an option cluster and the argument after it was overwritten with the
+# loader's internal eval string -- silent corruption, exit status unchanged.
+# `--profile` was never hit only because a leading "--" is rejected, which is
+# why the damage looked arbitrary. Reference behavior confirmed against Linux
+# zsh 5.9: all three arguments arrive untouched. ------------------------
+test_script_args_not_reinterpreted() {
+    local script=$BINDIR/argv-operands-test.$$.zsh
+    print -r -- 'print -r -- "$1|$2|$3"' > $script || {
+        fail_test "script arguments are not reinterpreted as launcher options" \
+            "could not create $script"
+        return
+    }
+    # Third argument is deliberately NOT path-like. A POSIX-looking path here
+    # would be rewritten by MSYS argument conversion in the calling shell
+    # (/tmp/x -> C:/.../tmp/x) before the launcher ever sees it -- expected
+    # behavior, unrelated to this bug, and it would make the assertion fail
+    # for the wrong reason.
+    local out
+    out=$("$LAUNCHER" -f $script -backup --profile value3 2>&1)
+    rm -f $script
+    if [[ $out == '-backup|--profile|value3' ]]; then
+        pass_test "script arguments are not reinterpreted as launcher options"
+    else
+        fail_test "script arguments are not reinterpreted as launcher options" "got: ${(qq)out}"
+    fi
+}
+
 # --- bundled GNU find must win over Windows' incompatible System32 one --
 test_find_bundled() {
     local out
@@ -826,6 +857,7 @@ test_arithmetic_increment_is_err_exit_safe
 test_pipe_in_quotes
 test_embedded_quotes
 test_nomatch_disabled_for_regex_args
+test_script_args_not_reinterpreted
 test_find_bundled
 test_xargs_bundled
 test_startup_cwd
