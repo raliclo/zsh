@@ -204,15 +204,29 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
 # build at all if they've drifted, rather than build with a patch that
 # may not mean what it says.
 ZLE_PATCH="$REPO/helper/patches/windows-zle-surrogate-pairs.patch"
+DRIVE_PATCH="$REPO/helper/patches/windows-drive-abspath.patch"
 ZLE_CHECKSUMS="$REPO/helper/patches/checksum.txt"
 ZLE_BACKUP="$BUILD/zle-patch-backup"
 ZLE_RESTORE_FROM_BACKUP=
+# Space-separated repo-relative paths saved into $ZLE_BACKUP before patching.
+# List-driven so a second patch does not mean a second copy of the
+# backup/restore/trap machinery below.
+PATCHED_FILES=
+
+backup_patch_targets() {
+    for _bpt_file in "$@"; do
+        mkdir -p "$ZLE_BACKUP/$(dirname "$_bpt_file")"
+        cp "$SRC/$_bpt_file" "$ZLE_BACKUP/$_bpt_file"
+        PATCHED_FILES="$PATCHED_FILES $_bpt_file"
+    done
+}
 
 restore_zle_backup() {
     if [ -n "$ZLE_RESTORE_FROM_BACKUP" ]; then
-        echo "==> Restoring Windows ZLE files from pre-patch backup..."
-        cp "$ZLE_BACKUP/Src/Zle/zle.h" "$SRC/Src/Zle/zle.h"
-        cp "$ZLE_BACKUP/Src/Zle/zle_move.c" "$SRC/Src/Zle/zle_move.c"
+        echo "==> Restoring patched sources from pre-patch backup..."
+        for _rzb_file in $PATCHED_FILES; do
+            [ -f "$ZLE_BACKUP/$_rzb_file" ] && cp "$ZLE_BACKUP/$_rzb_file" "$SRC/$_rzb_file"
+        done
         ZLE_RESTORE_FROM_BACKUP=
     fi
 }
@@ -224,17 +238,19 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
     # report each as a bogus FAILED entry).
     if ! ( cd "$SRC" && grep -v '^#' "$ZLE_CHECKSUMS" | sha256sum -c - ) >/dev/null 2>&1; then
         if [ -n "$FORCE" ]; then
-            echo "warning: Src/Zle/zle.h and/or Src/Zle/zle_move.c no longer match" >&2
-            echo "         helper/patches/checksum.txt; building anyway (-f). The ZLE" >&2
-            echo "         patch below may not apply cleanly, or may apply but no" >&2
-            echo "         longer mean what its comments say. Run" >&2
-            echo "         helper/regen_checksum.sh once you've confirmed the" >&2
-            echo "         patch is still correct." >&2
+            echo "warning: one or more of Src/Zle/zle.h, Src/Zle/zle_move.c," >&2
+            echo "         Src/hist.c, Src/subst.c no longer matches" >&2
+            echo "         helper/patches/checksum.txt; building anyway (-f). The" >&2
+            echo "         patches below may not apply cleanly, or may apply but no" >&2
+            echo "         longer mean what their comments say. Run" >&2
+            echo "         helper/regen_checksum.sh once you've confirmed they are" >&2
+            echo "         still correct." >&2
         else
-            echo "error: Src/Zle/zle.h and/or Src/Zle/zle_move.c no longer match the" >&2
-            echo "       versions helper/patches/windows-zle-surrogate-pairs.patch was" >&2
-            echo "       written against (see helper/patches/checksum.txt). Refusing to" >&2
-            echo "       build until the patch is reviewed and checksum.txt updated" >&2
+            echo "error: one or more of Src/Zle/zle.h, Src/Zle/zle_move.c," >&2
+            echo "       Src/hist.c, Src/subst.c no longer matches the versions the" >&2
+            echo "       patches in helper/patches/ were written against (see" >&2
+            echo "       helper/patches/checksum.txt). Refusing to build until the" >&2
+            echo "       patches are reviewed and checksum.txt updated" >&2
             echo "       (helper/regen_checksum.sh), or rerun with -f to build" >&2
             echo "       past this check once." >&2
             exit 1
@@ -242,14 +258,26 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
     fi
     echo "==> Applying Windows ZLE surrogate-pair patch..."
     rm -rf "$ZLE_BACKUP"
-    mkdir -p "$ZLE_BACKUP/Src/Zle"
-    cp "$SRC/Src/Zle/zle.h" "$ZLE_BACKUP/Src/Zle/zle.h"
-    cp "$SRC/Src/Zle/zle_move.c" "$ZLE_BACKUP/Src/Zle/zle_move.c"
+    backup_patch_targets Src/Zle/zle.h Src/Zle/zle_move.c
     git -C "$SRC" apply "$ZLE_PATCH"
     ZLE_RESTORE_FROM_BACKUP=1
+
+    # Same lifecycle, so it rides along with the ZLE patch's checksum gate
+    # and backup: both are applied to a pristine tree here and reverted by
+    # the trap. Keeping them together means a build can never end up with
+    # one applied and the other not.
+    echo "==> Applying Windows drive-path (:A/:a/:P) patch..."
+    backup_patch_targets Src/hist.c Src/subst.c
+    git -C "$SRC" apply "$DRIVE_PATCH"
 elif [ -f "$ZLE_BACKUP/Src/Zle/zle.h" ] && \
      [ -f "$ZLE_BACKUP/Src/Zle/zle_move.c" ] && \
      grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
+    # A previous run was interrupted after patching. Rebuild the restore
+    # list from whatever the backup actually holds, so the trap below puts
+    # every patched file back, not just the ZLE pair.
+    for _leftover in Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c; do
+        [ -f "$ZLE_BACKUP/$_leftover" ] && PATCHED_FILES="$PATCHED_FILES $_leftover"
+    done
     ZLE_RESTORE_FROM_BACKUP=1
 fi
 
