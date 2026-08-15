@@ -275,9 +275,7 @@ in `bucket/zsh.json`:
    zip, and its sha256 hash.
 3. Runs `scoop install bucket/zsh.json` (uninstalling any previous zsh
    first — **close any running zsh processes before this step**, since
-   scoop can't remove files a running process still has open, and the
-   reinstall silently no-ops if uninstall fails since the version string
-   doesn't change between rebuilds), which:
+   scoop can't remove files a running process still has open), which:
    - extracts the zip to `~/scoop/apps/zsh/<version>\` and links
      `~/scoop/apps/zsh/current` to it — this is scoop's canonical location,
      derived from the manifest filename and `version` field;
@@ -292,8 +290,58 @@ in `bucket/zsh.json`:
 The installer clears Scoop's `zsh` download cache before reinstalling, because
 the local `file:///` zip is regenerated on each package run.
 
-To rebuild and reinstall after source changes, rerun the PowerShell build and
-install commands from "Usage".
+### Version strings carry a build identity
+
+The manifest `version` is not zsh's own version alone — it is
+`<zsh version>.<YYYYMMDD>v<n>.<commit>`, e.g.
+`5.9.999.3-test.20260816v1.d96561f07`. The counter restarts at `v1` each new
+day and is derived from the version already in `bucket/zsh.json`, so it stays
+right across machines and clean checkouts.
+
+This exists because zsh's own version string never changes between builds of
+the same source. With a fixed version scoop treated every rebuild as
+already-installed: `scoop update zsh` skipped it, `scoop install` refused it,
+and the stale download stayed in the cache — three symptoms of one cause, so
+updating meant uninstall + cache rm + install every time. With a distinct
+version per build, `scoop update zsh` just works.
+
+Note the identity is joined with `.` rather than `+` on purpose: under semver
+everything after `+` is build metadata and is *ignored* when comparing
+precedence, which would let two builds compare equal and reintroduce exactly
+this problem.
+
+One cost: scoop caches one ~56 MB zip per version, so the cache grows with
+each build. `scoop cache rm zsh` clears them; nothing installed depends on the
+cache.
+
+### Updating and removing
+
+Normal path after a rebuild — no uninstall needed:
+
+```
+sh helper/scoop_install.sh --package-only   # zip + manifest, install untouched
+scoop update zsh
+```
+
+`--package-only` stops after regenerating the zip and manifest (they must be
+regenerated together, as the manifest pins the zip's sha256) and leaves the
+running install alone, which matters when something is currently using zsh.
+
+Fallback, for a forced clean reinstall — still needed if the cache is
+corrupt, the manifest and installed version have somehow converged, or an
+install is otherwise wedged:
+
+```
+scoop uninstall zsh && scoop cache rm zsh
+scoop install 'C:/Users/<you>/proj/zsh/build/local-manifest/zsh.json'
+```
+
+Either way, close running zsh processes first (`tasklist /FI "IMAGENAME eq
+zsh.exe"`, then `taskkill /F /IM zsh.exe`); scoop cannot replace files a live
+process holds open, and its uninstall fails rather than forcing the issue.
+
+To rebuild and reinstall from scratch after source changes, rerun the
+PowerShell build and install commands from "Usage".
 To remove: `scoop uninstall zsh`.
 
 ## Regression tests (helper/test/test_windows_packaging.zsh)
