@@ -198,6 +198,26 @@ static int option_takes_command(const wchar_t *arg) {
     return 0;
 }
 
+/* True for an option that consumes the FOLLOWING argv entry as its value,
+ * so the scan below does not mistake that value for the script operand.
+ * zsh accepts both `-o optname` / `+o optname` and `--emulate shell`. */
+static int option_takes_value(const wchar_t *arg) {
+    if ((arg[0] == L'-' || arg[0] == L'+') && arg[1] == L'o' && arg[2] == L'\0')
+        return 1;
+    if (wcscmp(arg, L"--emulate") == 0)
+        return 1;
+    return 0;
+}
+
+/* True once argv[i] is an operand -- the script or command name -- rather
+ * than an option. zsh stops interpreting options there, and so must we. */
+static int ends_option_section(const wchar_t *arg) {
+    if (arg[0] != L'-' && arg[0] != L'+') return 1;   /* plain operand */
+    if (arg[1] == L'\0') return 1;                    /* bare "-" or "+" */
+    if (arg[0] == L'-' && arg[1] == L'-' && arg[2] == L'\0') return 1;  /* "--" */
+    return 0;
+}
+
 /* True if s contains a double quote that is NOT backslash-escaped (an even
  * number of backslashes precedes it, zero included). */
 static int has_bare_quote(const wchar_t *s) {
@@ -217,7 +237,17 @@ static void protect_command_arg(int argc, wchar_t **argv) {
         L"eval $ZSH_LOADER_SCRIPT; _zsh_loader_status=$?; "
         L"unset ZSH_LOADER_SCRIPT; exit $_zsh_loader_status";
 
+    /* Only the leading OPTION section may contain the -c being protected.
+     * Scanning the whole of argv corrupted script arguments: everything
+     * after the script name is an operand, and a single-dash operand that
+     * merely contains a 'c' (`-backup` -> b,a,c,k,u,p) looked like an
+     * option cluster, so the argument after it was overwritten with
+     * evalCommand below. Real zsh stops option parsing at the first
+     * operand, and `--profile` was never affected only because
+     * option_takes_command() rejects a leading "--". */
     for (int i = 1; i + 1 < argc; i++) {
+        if (ends_option_section(argv[i])) break;
+        if (option_takes_value(argv[i])) { i++; continue; }
         if (option_takes_command(argv[i])) {
             const wchar_t *script;
             /* Callers disagree on how to quote the -c script, and the two
