@@ -1,0 +1,69 @@
+diff --git a/Src/hist.c b/Src/hist.c
+index c353601bf..ff04836cb 100644
+--- a/Src/hist.c
++++ b/Src/hist.c
+@@ -1874,6 +1874,43 @@ hcomsearch(char *str)
+ 
+ /* various utilities for : modifiers */
+ 
++/*
++ * Normalize a Windows drive path (C:/... or C:\...) to POSIX form.
++ * Returns the path unchanged everywhere else, and on Cygwin/MSYS if it is
++ * not a drive path or the conversion fails.
++ *
++ * Such a path is absolute on this platform -- the runtime opens it fine --
++ * but it does not begin with '/', so callers that test for that treat it as
++ * relative and prepend the cwd, yielding <cwd>/C:/Users/...
++ *
++ * Converting, rather than merely accepting it as absolute, is deliberate:
++ * realpath() hands a drive path straight back unchanged, so :A would echo
++ * back whichever spelling it was given, and two paths naming the same file
++ * would not compare equal. Normalizing gives one canonical spelling.
++ *
++ * Shared because the "prepend cwd if it does not start with /" test is
++ * written out separately in chabspath() (serving :A and :a) and in the 'P'
++ * case in subst.c (serving :P); both need the same notion of absolute.
++ */
++
++/**/
++char *
++cygdrivepath(char *path)
++{
++#ifdef __CYGWIN__
++    if (((*path >= 'A' && *path <= 'Z') || (*path >= 'a' && *path <= 'z')) &&
++	path[1] == ':' && (IS_DIRSEP(path[2]) || !path[2])) {
++	char *winpath = unmetafy(dupstring(path), NULL);
++	char posixpath[PATH_MAX+1];
++
++	if (cygwin_conv_path(CCP_WIN_A_TO_POSIX, winpath,
++			     posixpath, sizeof(posixpath)) == 0)
++	    return metafy(posixpath, -1, META_HEAPDUP);
++    }
++#endif
++    return path;
++}
++
+ /**/
+ int
+ chabspath(char **junkptr)
+@@ -1883,6 +1920,8 @@ chabspath(char **junkptr)
+     if (!**junkptr)
+ 	return 1;
+ 
++    *junkptr = cygdrivepath(*junkptr);
++
+     if (**junkptr != '/') {
+ 	char *here = zgetcwd();
+ 	if (here[strlen(here)-1] != '/')
+diff --git a/Src/subst.c b/Src/subst.c
+index 1b75c035a..d761d59e5 100644
+--- a/Src/subst.c
++++ b/Src/subst.c
+@@ -4902,6 +4902,7 @@ modify(char **str, char **ptr, int inbrace)
+ 		    }
+ 		    break;
+ 		case 'P':
++		    *str = cygdrivepath(*str);
+ 		    if (**str != '/') {
+ 			char *here = zgetcwd();
+ 			if (here[strlen(here)-1] != '/')
