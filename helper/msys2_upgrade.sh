@@ -93,7 +93,7 @@ export PATH=/usr/bin:/clang64/bin:$PATH
 pacman --noconfirm -Sy
 pacman --noconfirm -S --needed \
   gcc make autoconf automake ncurses-devel mingw-w64-clang-x86_64-clang \
-  coreutils diffutils findutils gawk gnu-netcat grep gzip m4 make man-db ncurses \
+  bc coreutils diffutils findutils gawk gnu-netcat grep gzip m4 make man-db ncurses \
   openssl perl procps-ng psmisc sed tar util-linux vim wget which xz
 EOF_UPGRADE
 
