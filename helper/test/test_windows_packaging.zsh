@@ -220,6 +220,36 @@ test_script_args_not_reinterpreted() {
     fi
 }
 
+# --- A Windows drive path is absolute on this platform -- the runtime opens
+# it fine -- but it does not start with '/', so zsh's path modifiers used to
+# treat it as relative and prepend the cwd, turning C:/Users/x into
+# <cwd>/C:/Users/x. Scripts then created directories literally named 'C:'.
+# The patch normalizes drive paths to POSIX form rather than merely accepting
+# them as absolute: realpath() hands a drive path straight back unchanged, so
+# otherwise :A would echo back whichever spelling it was given and two paths
+# naming the same file would not compare equal.
+#
+# :A, :a and :P are all covered because the "prepend cwd" test is written out
+# twice in the source -- chabspath() in hist.c serves :A and :a, while the 'P'
+# case in subst.c has its own copy -- so a fix to one does not imply the other.
+test_drive_path_modifiers() {
+    local out
+    out=$("$LAUNCHER" -f -c '
+        cd /
+        for p in "C:/Users" "C:\\Users" ; do
+            print -r -- "${p:A} ${p:a} ${p:P}"
+        done
+        # a colon that is not a drive letter must stay relative
+        cd /tmp && print -r -- "${${:-foo:bar}:A}"
+    ' 2>&1)
+    local expected=$'/c/Users /c/Users /c/Users\n/c/Users /c/Users /c/Users\n/tmp/foo:bar'
+    if [[ $out == $expected ]]; then
+        pass_test "drive paths are absolute and normalized for :A, :a and :P"
+    else
+        fail_test "drive paths are absolute and normalized for :A, :a and :P" "got: ${(qq)out}"
+    fi
+}
+
 # --- bundled GNU find must win over Windows' incompatible System32 one --
 test_find_bundled() {
     local out
@@ -858,6 +888,7 @@ test_pipe_in_quotes
 test_embedded_quotes
 test_nomatch_disabled_for_regex_args
 test_script_args_not_reinterpreted
+test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled
 test_startup_cwd
