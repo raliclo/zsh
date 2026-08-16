@@ -143,10 +143,15 @@ export PATH
 # limitation documented in helper/test/test_windows_packaging.zsh.
 mkdir -p "$MSYS2_ROOT/tmp"
 
-# Keep MSYS2 packages current before detecting/copying build and bundled tools.
-# This ensures build/release contents and build/bin/version.txt reflect the
-# latest packages available to this MSYS2 installation. Set
-# ZSH_SKIP_MSYS2_UPGRADE=1 for offline/repro-only builds.
+# Bring MSYS2 to a consistent package set before detecting/copying build and
+# bundled tools, so build/release and build/bin/version.txt reflect one
+# coherent tree rather than a mix of old and new. This is a FULL upgrade, not
+# a database refresh plus a selective install -- the latter is the partial
+# upgrade pattern, and it matters here because the packaged runtime is
+# assembled from whatever this MSYS2 tree happens to hold.
+#
+# Set ZSH_SKIP_MSYS2_UPGRADE=1 for offline builds, or when you need the build
+# to consume a pre-prepared toolchain without mutating it.
 if [ "${ZSH_SKIP_MSYS2_UPGRADE:-}" != 1 ]; then
     sh "$REPO/helper/msys2_upgrade.sh" "$MSYS2_ROOT"
 else

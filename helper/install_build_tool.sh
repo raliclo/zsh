@@ -53,8 +53,19 @@ fi
 # zsh itself needs the plain MSYS gcc and POSIX runtime. The small launcher
 # uses CLANG64 so it does not import msys-2.0.dll and can safely be invoked by
 # an already-running MSYS zsh.
+# Full upgrade first, then install. `-Sy` followed by a selective `-S` is the
+# partial-upgrade pattern: it refreshes the package database and then pulls
+# only some packages from it, which can mix new tools with an older base
+# runtime. Two passes because the first may be cut short when msys2-runtime
+# itself is replaced -- see helper/msys2_upgrade.sh for the full explanation.
+echo "==> Upgrading MSYS2 to a consistent package set (pass 1 of 2)..."
+"$MSYS2_ROOT/usr/bin/pacman.exe" -Syu --noconfirm \
+    || echo "   pass 1 ended early (likely a runtime swap); continuing"
+echo "==> Upgrading MSYS2 (pass 2 of 2)..."
+"$MSYS2_ROOT/usr/bin/pacman.exe" -Syu --noconfirm
+
 echo "==> Installing MSYS build tools and Clang for the native launcher..."
-"$MSYS2_ROOT/usr/bin/pacman.exe" -Sy --noconfirm --needed \
+"$MSYS2_ROOT/usr/bin/pacman.exe" -S --noconfirm --needed \
     gcc make autoconf automake ncurses-devel mingw-w64-clang-x86_64-clang
 
 echo "==> Done. Toolchain check:"
