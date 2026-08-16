@@ -58,15 +58,49 @@ scoop_home() {
     printf '%s\n' "$HOME/scoop"
 }
 
+# Case-mapped with a case statement rather than `tr`: to_windows_path runs
+# once per shimmed tool, and this script's whole point is that external
+# basics may be broken shims -- spawning one per call is both a dependency
+# it does not need and, on Windows, a per-process cost paid ~150 times.
+upper_drive() {
+    case "$1" in
+        a) printf 'A\n' ;; b) printf 'B\n' ;; c) printf 'C\n' ;; d) printf 'D\n' ;;
+        e) printf 'E\n' ;; f) printf 'F\n' ;; g) printf 'G\n' ;; h) printf 'H\n' ;;
+        i) printf 'I\n' ;; j) printf 'J\n' ;; k) printf 'K\n' ;; l) printf 'L\n' ;;
+        m) printf 'M\n' ;; n) printf 'N\n' ;; o) printf 'O\n' ;; p) printf 'P\n' ;;
+        q) printf 'Q\n' ;; r) printf 'R\n' ;; s) printf 'S\n' ;; t) printf 'T\n' ;;
+        u) printf 'U\n' ;; v) printf 'V\n' ;; w) printf 'W\n' ;; x) printf 'X\n' ;;
+        y) printf 'Y\n' ;; z) printf 'Z\n' ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# The .cmd wrappers and .shim metadata written below are read by native
+# cmd.exe, which cannot resolve POSIX drive paths. Run from Git Bash or MSYS2
+# -- where $HOME is typically /c/Users/... -- the paths derived from it must
+# therefore be converted, or the "repaired" shim fails at execution time with
+# a path that looks perfectly reasonable in the file.
+#
+# Forward slashes are kept rather than converted to backslashes: scoop shim
+# metadata accepts C:/... and it avoids zsh interpreting sequences like \u
+# and \a in the paths that pass through it.
 to_windows_path() {
     case "$1" in
-        [A-Za-z]:/*)
-            # Scoop shim metadata accepts C:/... paths; keep forward slashes
-            # to avoid zsh interpreting backslash sequences like \u and \a.
+        [A-Za-z]:/*|[A-Za-z]:\\*)
+            # Already Windows-form.
             printf '%s\n' "$1"
             ;;
-        [A-Za-z]:\\*)
-            printf '%s\n' "$1"
+        /mnt/[A-Za-z]/*|/mnt/[A-Za-z])
+            _twp_rest=${1#/mnt/?}
+            _twp_drive=${1#/mnt/}
+            _twp_drive=${_twp_drive%%/*}
+            printf '%s:%s\n' "$(upper_drive "$_twp_drive")" "${_twp_rest:-/}"
+            ;;
+        /[A-Za-z]/*|/[A-Za-z])
+            _twp_rest=${1#/?}
+            _twp_drive=${1#/}
+            _twp_drive=${_twp_drive%%/*}
+            printf '%s:%s\n' "$(upper_drive "$_twp_drive")" "${_twp_rest:-/}"
             ;;
         *)
             printf '%s\n' "$1"
@@ -155,7 +189,20 @@ for tool do
     fi
     if [ ! -f "$runner" ]; then
         if [ -n "$shim_runner_template" ]; then
-            cp "$shim_runner_template" "$runner"
+            # Prefer "$MSYS2_BIN/cp.exe" over a bare cp: this script repairs
+            # broken Scoop shims, and 'cp' is itself one of the tools it
+            # shims, so a bare cp resolves through PATH and could be the very
+            # broken shim being repaired -- failing partway through fixing
+            # the thing it needs.
+            #
+            # Tested with -s, not -x: a zero-byte cp.exe is executable by
+            # Windows' rules but hangs rather than failing when run, so an
+            # -x test would trade a clear error for a stall.
+            if [ -s "$MSYS2_BIN/cp.exe" ]; then
+                "$MSYS2_BIN/cp.exe" "$shim_runner_template" "$runner"
+            else
+                cp "$shim_runner_template" "$runner"
+            fi
         else
             echo "skip: $tool (missing Scoop shim runner $runner)" >&2
             continue

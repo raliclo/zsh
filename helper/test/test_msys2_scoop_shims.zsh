@@ -84,6 +84,18 @@ for tool in "${tools[@]}"; do
         print -r -- 'exit 0' >> "$src"
     elif [[ $tool == pgrep ]]; then
         src=
+    elif [[ $tool == cp ]]; then
+        # cp must be a REAL binary here, not the zero-byte stub the other
+        # tools get: the helper actually executes $MSYS2_BIN/cp.exe when it
+        # has to synthesize a missing shim runner. A stub is executable by
+        # Windows' rules but hangs instead of failing, which stalls the whole
+        # suite rather than reporting anything.
+        src="$tmp/scoop/apps/msys2/current/usr/bin/cp.exe"
+        if [[ -s ${MSYS2_REAL_CP:-/usr/bin/cp.exe} ]]; then
+            command cp -- "${MSYS2_REAL_CP:-/usr/bin/cp.exe}" "$src"
+        else
+            : > "$src"
+        fi
     else
         src="$tmp/scoop/apps/msys2/current/usr/bin/$tool.exe"
         : > "$src"
@@ -103,6 +115,16 @@ rm -f -- "$tmp/scoop/shims/openssl.exe"
     MSYS2_SCOOP_SHIMS_NO_VERIFY=1
     source "$script" "${tools[@]}" >/dev/null
 )
+
+# The generated .cmd/.shim files are read by native cmd.exe, which cannot
+# resolve POSIX drive paths. This test drives the script with a POSIX
+# SCOOP/HOME -- the normal shape when it is run from Git Bash or MSYS2 -- so
+# the paths it writes must come out Windows-form.
+if [[ $tmp == /[a-zA-Z]/* ]]; then
+    tmp_win="${(U)tmp[2]}:${tmp[3,-1]}"
+else
+    tmp_win=$tmp
+fi
 
 missing=0
 for tool in "${tools[@]}"; do
@@ -159,6 +181,42 @@ for tool in "${tools[@]}"; do
         print -ru2 -- "wrong cmd boundary wrapper for $tool: $(<"$wrapper")"
         missing=1
     fi
+
+    # The .cmd and .shim files are executed by native cmd.exe, which cannot
+    # resolve a POSIX drive path. This test drives the script with a POSIX
+    # SCOOP/HOME (the normal shape when run from Git Bash or MSYS2), so any
+    # /c/... leaking into the generated files means a shim that looks correct
+    # on disk but fails at execution time.
+    # Exact comparison rather than a heuristic: a "looks like /x/" pattern
+    # false-positives on legitimate single-character path components (a user
+    # directory named x, for instance). $tmp is known in both spellings here,
+    # so assert on those directly.
+    if [[ $wrapper_body != *"$tmp_win"* ]]; then
+        print -ru2 -- "cmd wrapper for $tool lacks the Windows-form path $tmp_win: $wrapper_body"
+        missing=1
+    fi
+    if [[ $tmp_win != $tmp && $wrapper_body == *"$tmp"* ]]; then
+        print -ru2 -- "POSIX drive path leaked into cmd wrapper for $tool: $wrapper_body"
+        missing=1
+    fi
+    shim_body=$(<"$shim")
+    if [[ $tmp_win != $tmp && $shim_body == *"$tmp"* ]]; then
+        print -ru2 -- "POSIX drive path leaked into shim metadata for $tool: $shim_body"
+        missing=1
+    fi
 done
+
+# --- The helper repairs broken Scoop shims, and 'cp' is one of the tools it
+# shims. If it called a bare cp it would resolve through PATH and could be the
+# very broken shim being repaired, failing partway through the fix. Assert it
+# reaches for the MSYS2 binary directly instead. -----------------------------
+# Asserts the MSYS2 binary is reached for, rather than asserting a bare cp
+# never appears: a guarded fallback for an unusable MSYS2 cp is legitimate,
+# and forbidding the string outright would just push that guard out of the
+# script without making anything safer.
+if ! grep -q '"\$MSYS2_BIN/cp\.exe"' "$script"; then
+    print -ru2 -- "shim helper must copy runner templates with \$MSYS2_BIN/cp.exe, not a bare cp"
+    missing=1
+fi
 
 exit $missing
