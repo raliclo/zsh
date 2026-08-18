@@ -5,13 +5,15 @@
 # Prerequisite: sh helper/compile.sh  (produces build/bin)
 #
 # Usage (from Git Bash or any POSIX shell):
-#   sh helper/scoop_install.sh [--package-only]
+#   sh helper/scoop_install.sh [--package-only] [--upload-release] [--install-remote]
+#   sh helper/scoop_install.sh --release
 #
 # What it does:
-#   1. Zips build/bin/*  ->  build/zsh-<version>-x64.zip
+#   1. Zips build/bin/*  ->  build/package/zsh.zip
 #   2. Regenerates bucket/zsh.json with the version and sha256 hash
-#      (file:/// url pointing at the zip)
-#   3. scoop install bucket/zsh.json, which:
+#      (GitHub Release asset URL)
+#   3. Optionally uploads zsh.zip to one stable GitHub Release tag
+#   4. scoop install bucket/zsh.json or build/local-manifest/zsh.json, which:
 #        - extracts to  ~/scoop/apps/zsh/<version>\   (+ 'current' junction)
 #        - creates the shim  ~/scoop/shims/zsh        (from zsh-loader.exe)
 #        - uses the packaged .zshenv bootstrap so zsh finds dynamic modules
@@ -19,16 +21,41 @@
 # --package-only stops after step 2: it refreshes the zip and the manifest
 # hash (which have to be regenerated together, since the manifest pins the
 # zip's sha256) but leaves the currently installed zsh alone. Use it when
-# preparing a commit without disturbing a working install -- steps 3 and 4
-# uninstall and reinstall, which would interrupt anything running zsh.
+# preparing a commit without disturbing a working install. --upload-release
+# publishes the package asset without installing. --install-remote uploads the
+# asset and installs from bucket/zsh.json. --release is shorthand for
+# --upload-release --install-remote. The GitHub Release tag is stable
+# (default: zsh-portable) and the zsh.zip asset is overwritten each run.
 
 set -e
 
 PACKAGE_ONLY=
-if [ "$1" = "--package-only" ]; then
-    PACKAGE_ONLY=1
+UPLOAD_RELEASE=
+INSTALL_REMOTE=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --package-only)
+            PACKAGE_ONLY=1
+            ;;
+        --upload-release)
+            UPLOAD_RELEASE=1
+            ;;
+        --install-remote)
+            UPLOAD_RELEASE=1
+            INSTALL_REMOTE=1
+            ;;
+        --release)
+            UPLOAD_RELEASE=1
+            INSTALL_REMOTE=1
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            echo "usage: sh helper/scoop_install.sh [--package-only] [--upload-release] [--install-remote|--release]" >&2
+            exit 2
+            ;;
+    esac
     shift
-fi
+done
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 BUILD="$REPO/build"
@@ -121,12 +148,30 @@ run_shim_version() {
     "$shim" --version
 }
 
+github_repo_url() {
+    case "$1" in
+        git@github.com:*)
+            printf 'https://github.com/%s\n' "${1#git@github.com:}" | sed 's/\.git$//'
+            ;;
+        https://github.com/*|http://github.com/*)
+            printf '%s\n' "$1" | sed 's/\.git$//'
+            ;;
+        *)
+            printf '%s\n' "$1" | sed 's/\.git$//'
+            ;;
+    esac
+}
+
 if [ ! -x "$BUILD/bin/zsh.exe" ] || [ ! -x "$BUILD/bin/zsh-loader.exe" ]; then
     echo "error: $BUILD/bin/zsh.exe or zsh-loader.exe not found; run helper/compile.sh first" >&2
     exit 1
 fi
 if [ ! -f "$BUILD/bin/zsh.cmd" ] || { [ ! -f "$BUILD/bin/zsh/zle.so" ] && [ ! -f "$BUILD/bin/zsh/zle.dll" ]; }; then
     echo "error: build/bin is missing zsh.cmd or zsh/zle module; rerun helper/compile.sh" >&2
+    exit 1
+fi
+if [ ! -f "$BUILD/bin/zshrc.sh" ] || ! grep -q 'zshrc\.sh' "$BUILD/bin/.zshrc" 2>/dev/null; then
+    echo "error: build/bin is missing the portable zshrc.sh bootstrap; rerun helper/compile.sh" >&2
     exit 1
 fi
 if [ -z "$PACKAGE_ONLY" ]; then
@@ -185,8 +230,8 @@ fi
 
 VERSION="$BASE_VERSION.${BUILD_DATE}v${BUILD_SEQ}.${SHORT_SHA}"
 echo "==> Build version: $VERSION"
-RELEASE="$BUILD/release"
-ZIP="$RELEASE/zsh.zip"
+PACKAGE="$BUILD/package"
+ZIP="$PACKAGE/zsh.zip"
 REPO_WIN=$(to_windows_path "$REPO")   # Windows-style path (C:/...)
 SCOOP_HOME=$(scoop_home)
 TAR_EXE=$(find_windows_tar) || {
@@ -194,30 +239,27 @@ TAR_EXE=$(find_windows_tar) || {
     exit 1
 }
 
-# Public download URL for scoop users: OUR fork's remote, develop branch.
-# (Requires build/release/zsh.zip to be committed and pushed on develop.)
-#
-# Deliberately the 'ralic' remote, not 'origin': 'origin' is the upstream
-# repo this one was forked from (zsh-users/zsh), which carries no
-# build/release/zsh.zip, so deriving the URL from it would silently produce
-# a manifest pointing at a file that does not exist. Fall back to 'origin'
-# only for a clone that predates the remote split.
+# Public download URL for scoop users: OUR fork's stable GitHub Release asset.
+# Deliberately the 'ralic' remote, not 'origin': 'origin' is often the upstream
+# repo this one was forked from (zsh-users/zsh). Fall back to 'origin' only for
+# clones that predate the remote split.
 if git -C "$REPO" remote get-url ralic >/dev/null 2>&1; then
     FORK_REMOTE=ralic
 else
     FORK_REMOTE=origin
 fi
-ORIGIN=$(git -C "$REPO" remote get-url "$FORK_REMOTE" | sed -e 's/\.git$//')
-PUBLIC_URL=$(printf '%s' "$ORIGIN" \
-    | sed -e 's#github\.com#raw.githubusercontent.com#')/develop/build/release/zsh.zip
+ORIGIN=$(github_repo_url "$(git -C "$REPO" remote get-url "$FORK_REMOTE")")
+GITHUB_REPO=${ORIGIN#https://github.com/}
+RELEASE_TAG=${ZSH_RELEASE_TAG:-zsh-portable}
+PUBLIC_URL="$ORIGIN/releases/download/$RELEASE_TAG/zsh.zip"
 
 # --- 1. Zip the portable runtime --------------------------------------------
 # Windows' bsdtar is used because PowerShell's Compress-Archive cannot read
 # the MSYS2-built binaries.
-echo "==> Packaging build/bin -> build/release/zsh.zip"
-mkdir -p "$RELEASE"
+echo "==> Packaging build/bin -> build/package/zsh.zip"
+mkdir -p "$PACKAGE"
 rm -f "$ZIP"
-"$TAR_EXE" -a -cf "$REPO_WIN/build/release/zsh.zip" \
+"$TAR_EXE" -a -cf "$REPO_WIN/build/package/zsh.zip" \
     -C "$REPO_WIN/build/bin" .
 [ -f "$ZIP" ] || { echo "error: zip creation failed" >&2; exit 1; }
 
@@ -245,7 +287,7 @@ cat > "$BUCKET/zsh.json" <<EOF
             "zsh"
         ]
     ],
-    "notes": "zsh built from source with MSYS2; zip served from the develop branch of $ORIGIN. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
+    "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release $RELEASE_TAG at $ORIGIN. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
 }
 EOF
 echo "==> Wrote $BUCKET/zsh.json (url: $PUBLIC_URL)"
@@ -253,13 +295,41 @@ echo "==> Wrote $BUCKET/zsh.json (url: $PUBLIC_URL)"
 # A local-file variant of the manifest, so the install can be tested before
 # the zip is committed and pushed to origin/develop.
 mkdir -p "$BUILD/local-manifest"
-sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/release/zsh.zip\"#" \
+sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/package/zsh.zip\"#" \
     "$BUCKET/zsh.json" > "$BUILD/local-manifest/zsh.json"
+
+if [ -n "$UPLOAD_RELEASE" ]; then
+    command -v gh >/dev/null 2>&1 || {
+        echo "error: gh not found; install GitHub CLI or rerun without --upload-release/--release" >&2
+        exit 1
+    }
+    COMMIT=$(git -C "$REPO" rev-parse HEAD)
+    RELEASE_NOTES="Portable zsh build
+
+Version: $VERSION
+Commit: $COMMIT
+Asset: zsh.zip
+"
+    echo "==> Uploading $ZIP to GitHub Release $RELEASE_TAG ($GITHUB_REPO)..."
+    if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
+        gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPO" \
+            --title "zsh portable" \
+            --notes "$RELEASE_NOTES"
+        gh release upload "$RELEASE_TAG" "$ZIP" --repo "$GITHUB_REPO" --clobber
+    else
+        gh release create "$RELEASE_TAG" "$ZIP" \
+            --repo "$GITHUB_REPO" \
+            --target "$COMMIT" \
+            --title "zsh portable" \
+            --notes "$RELEASE_NOTES"
+    fi
+fi
 
 if [ -n "$PACKAGE_ONLY" ]; then
     echo "==> --package-only: zip and manifest refreshed; install left untouched."
-    echo "    Install it yourself with:"
-    echo "      sh helper/scoop_install.sh"
+    echo "    Upload and install from GitHub Release with:"
+    echo "      sh helper/scoop_install.sh --release"
     echo "    or directly from the local manifest:"
     echo "      scoop install '$REPO_WIN/build/local-manifest/zsh.json'"
     exit 0
@@ -273,9 +343,15 @@ if scoop list zsh 2>/dev/null | grep -q '^zsh '; then
 fi
 echo "==> Clearing scoop download cache for zsh..."
 scoop cache rm zsh 2>/dev/null || true
-echo "==> Installing via scoop (from local zip)..."
+if [ -n "$INSTALL_REMOTE" ]; then
+    INSTALL_MANIFEST="$REPO_WIN/bucket/zsh.json"
+    echo "==> Installing via scoop (from GitHub Release asset)..."
+else
+    INSTALL_MANIFEST="$REPO_WIN/build/local-manifest/zsh.json"
+    echo "==> Installing via scoop (from local zip)..."
+fi
 stop_zsh_processes
-scoop install "$REPO_WIN/build/local-manifest/zsh.json"
+scoop install "$INSTALL_MANIFEST"
 
 # --- 4. Verify ---------------------------------------------------------------
 echo "==> Installed. Shim check:"
