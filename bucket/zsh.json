@@ -1,12 +1,12 @@
 {
-    "version": "5.9.999.3-test.20260816v2.27d1dcaad",
+    "version": "5.9.999.3-test.20260818v2.85b45bd8c",
     "description": "Zsh shell built from source with the MSYS2 toolchain (portable runtime)",
     "homepage": "https://www.zsh.org",
     "license": "Zsh (MIT-like)",
     "architecture": {
         "64bit": {
-            "url": "https://raw.githubusercontent.com/raliclo/zsh/develop/build/release/zsh.zip",
-            "hash": "4180b582d86e1f78ec6c16ac8c9a0b1ec12343fa4afe9c39fd4052ffa0c9066c"
+            "url": "https://github.com/raliclo/zsh/releases/download/zsh-portable/zsh.zip",
+            "hash": "843cecac317d2e6065011282171e2437c8c529d4a2f45b24cda99a64e69682bb"
         }
     },
     "bin": [
@@ -15,5 +15,5 @@
             "zsh"
         ]
     ],
-    "notes": "zsh built from source with MSYS2; zip served from the develop branch of https://github.com/raliclo/zsh. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
+    "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release zsh-portable at https://github.com/raliclo/zsh. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
 }
