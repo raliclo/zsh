@@ -157,6 +157,9 @@ Dynamic modules (`zsh/zle`, `zsh/complete`, ...) are compiled to look in
 `/usr/local/lib/zsh/<version>`, which won't exist outside MSYS2. Both
 launchers set `ZDOTDIR`/`ZSH_PORTABLE_DIR` so the packaged `.zshenv` can
 prepend `build/bin` to `module_path`, then restore your real `ZDOTDIR`.
+Interactive defaults live in the packaged `zshrc.sh`, copied next to
+`.zshenv`; the packaged `.zshrc` sources that default file first and then
+forwards to the user's real `.zshrc`.
 
 Do **not** run the bare `build/Src/zsh.exe` (the raw build output, before
 assembly into `build/bin`) from Git Bash — it will fail with error
@@ -269,13 +272,16 @@ The PowerShell/MSYS2 command shown in "Usage" runs `helper/scoop_install.sh`,
 which packages `build/bin` and installs it through scoop, using the manifest
 in `bucket/zsh.json`:
 
-1. Zips `build/bin/*` to `build/release/zsh.zip` (with Windows' bsdtar —
+1. Zips `build/bin/*` to `build/package/zsh.zip` (with Windows' bsdtar —
    PowerShell's `Compress-Archive` cannot read the MSYS2-built binaries).
-2. Regenerates `bucket/zsh.json` with the version, a `file:///` URL to the
-   zip, and its sha256 hash.
-3. Runs `scoop install bucket/zsh.json` (uninstalling any previous zsh
-   first — **close any running zsh processes before this step**, since
-   scoop can't remove files a running process still has open), which:
+2. Regenerates `bucket/zsh.json` with the version, the GitHub Release asset URL,
+   and its sha256 hash.
+3. With `--release`, creates or updates one stable GitHub Release
+   (`zsh-portable` by default) and overwrites its `zsh.zip` asset; without it,
+   `build/local-manifest` is kept for local smoke installs.
+4. Runs `scoop install` (uninstalling any previous zsh first — **close any
+   running zsh processes before this step**, since scoop can't remove files a
+   running process still has open), which:
    - extracts the zip to `~/scoop/apps/zsh/<version>\` and links
      `~/scoop/apps/zsh/current` to it — this is scoop's canonical location,
      derived from the manifest filename and `version` field;
@@ -288,7 +294,7 @@ in `bucket/zsh.json`:
      the ignored `MODULE_PATH` environment variable.
 
 The installer clears Scoop's `zsh` download cache before reinstalling, because
-the local `file:///` zip is regenerated on each package run.
+each package run produces a new versioned artifact.
 
 ### Version strings carry a build identity
 
@@ -319,13 +325,15 @@ cache.
 Normal path after a rebuild — no uninstall needed:
 
 ```
-sh helper/scoop_install.sh --package-only   # zip + manifest, install untouched
-scoop update zsh
+sh helper/scoop_install.sh --release        # zip + manifest + GitHub Release upload + remote install
 ```
 
 `--package-only` stops after regenerating the zip and manifest (they must be
 regenerated together, as the manifest pins the zip's sha256) and leaves the
 running install alone, which matters when something is currently using zsh.
+`--upload-release` publishes the GitHub Release asset without installing. Set
+`ZSH_RELEASE_TAG` to override the stable release tag; otherwise every publish
+reuses `zsh-portable` and replaces the single `zsh.zip` asset.
 
 Fallback, for a forced clean reinstall — still needed if the cache is
 corrupt, the manifest and installed version have somehow converged, or an

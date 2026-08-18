@@ -597,6 +597,36 @@ test_user_rc_forwarding() {
     fi
 }
 
+test_default_zshrc_sh_is_packaged_and_loaded() {
+    local scratch out
+    if [[ ! -r $BINDIR/zshrc.sh ]]; then
+        fail_test "portable zshrc.sh is packaged" "missing $BINDIR/zshrc.sh"
+        return
+    fi
+
+    scratch=$BINDIR/default-zshrc-test.$$
+    mkdir -p $scratch || {
+        fail_test "portable zshrc.sh is loaded before user .zshrc" "could not create scratch dir $scratch"
+        return
+    }
+    print 'print -r -- user_zshrc_ran' > $scratch/.zshrc
+    out=$(ZDOTDIR=$scratch "$LAUNCHER" -i -c '
+        (( $+functions[zsh_portable_fix_keys] )) && print -r -- default_zshrc_loaded
+        print -r -- "prompt=$PROMPT"
+        print -r -- session_ok
+    ' 2>&1)
+    rm -rf $scratch
+
+    if [[ $out == *default_zshrc_loaded* &&
+          $out == *"prompt=%n@%~%# "* &&
+          $out == *user_zshrc_ran* &&
+          $out == *session_ok* ]]; then
+        pass_test "portable zshrc.sh is packaged and loaded before user .zshrc"
+    else
+        fail_test "portable zshrc.sh is packaged and loaded before user .zshrc" "got: ${(qq)out}"
+    fi
+}
+
 # --- Windows system directories must be last on PATH, not shadowing
 # bundled/earlier tools with the same name (find, sort, more, ...) -------
 test_path_system32_last() {
@@ -880,6 +910,27 @@ test_compile_runs_msys2_upgrade_helper() {
     fi
 }
 
+test_scoop_install_uses_github_release_assets() {
+    local installer=$TEST_REPO_ROOT/helper/scoop_install.sh
+    local manifest=$TEST_REPO_ROOT/bucket/zsh.json
+    if [[ -z $TEST_REPO_ROOT || ! -f $installer || ! -f $manifest ]]; then
+        fail_test "scoop install flow uses GitHub Release assets" "missing installer or manifest"
+        return
+    fi
+    if grep -q 'build/release' $installer $manifest 2>/dev/null ||
+       grep -q 'raw\.githubusercontent.*zsh\.zip' $installer $manifest 2>/dev/null; then
+        fail_test "scoop install flow uses GitHub Release assets" "found old branch/release-folder artifact reference"
+    elif grep -q 'gh release' $installer &&
+         grep -q 'build/package/zsh\.zip' $installer &&
+         grep -q 'ZSH_RELEASE_TAG:-zsh-portable' $installer &&
+         grep -q -- '--clobber' $installer &&
+         grep -q '/releases/download/' $manifest; then
+        pass_test "scoop install flow uses GitHub Release assets"
+    else
+        fail_test "scoop install flow uses GitHub Release assets" "missing GitHub Release upload or URL"
+    fi
+}
+
 test_multiline_c
 test_public_zsh_exe_preserves_pipe_regex
 test_nested_perl_dollars_survive_with_shell_quoting
@@ -905,11 +956,13 @@ test_user_lc_all_is_sanitized
 test_modules_load
 test_nested_zsh
 test_user_rc_forwarding
+test_default_zshrc_sh_is_packaged_and_loaded
 test_path_system32_last
 test_pid_is_real_winpid
 test_multibyte_cursor_and_delete
 test_msys2_tmp_startup
 test_compile_runs_msys2_upgrade_helper
+test_scoop_install_uses_github_release_assets
 
 print
 print "Results: $pass passed, $fail failed"
