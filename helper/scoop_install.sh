@@ -293,7 +293,7 @@ EOF
 echo "==> Wrote $BUCKET/zsh.json (url: $PUBLIC_URL)"
 
 # A local-file variant of the manifest, so the install can be tested before
-# the zip is committed and pushed to origin/develop.
+# the zip is uploaded to the GitHub Release the published manifest points at.
 mkdir -p "$BUILD/local-manifest"
 sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/package/zsh.zip\"#" \
     "$BUCKET/zsh.json" > "$BUILD/local-manifest/zsh.json"

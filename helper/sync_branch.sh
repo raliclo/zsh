@@ -16,12 +16,15 @@
 #      this fails loudly instead of rewriting them).
 #   3. Pushes the updated master to 'ralic', so our fork's master matches
 #      upstream on GitHub too.
-#   4. Rebases local develop onto the refreshed master, so our Windows work
-#      sits on top of current upstream.
+#   4. Rebases local develop-win onto the refreshed master, so our Windows
+#      work sits on top of current upstream.
 #
-# The develop rebase REWRITES published history, so pushing it needs
+# The Windows port lives on develop-win. Plain 'develop' is not what this
+# script touches; set ZSH_DEVELOP_BRANCH to override.
+#
+# That rebase REWRITES published history, so pushing it needs
 # --force-with-lease. That is not done unless you pass --push-develop,
-# because a force-push to develop also desyncs the scoop bucket clone at
+# because a force-push also desyncs the scoop bucket clone at
 # ~/scoop/buckets/zsh (it has to be reset to match afterwards).
 
 set -e
@@ -38,7 +41,11 @@ cd "$REPO"
 UPSTREAM_REMOTE=origin   # the repo we forked from
 FORK_REMOTE=ralic        # our own fork
 MASTER=master
-DEVELOP=develop
+# The Windows port lives on develop-win, not develop. Hardcoding the wrong
+# name here is not a no-op: this script rebases and can force-push, so it
+# would rewrite a branch nobody asked it to touch. Override with
+# ZSH_DEVELOP_BRANCH if that ever changes again.
+DEVELOP=${ZSH_DEVELOP_BRANCH:-develop-win}
 
 # --- 0. Preconditions --------------------------------------------------------
 for r in "$UPSTREAM_REMOTE" "$FORK_REMOTE"; do
