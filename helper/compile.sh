@@ -144,7 +144,7 @@ export PATH
 mkdir -p "$MSYS2_ROOT/tmp"
 
 # Bring MSYS2 to a consistent package set before detecting/copying build and
-# bundled tools, so build/release and build/bin/version.txt reflect one
+# bundled tools, so build/package and build/bin/version.txt reflect one
 # coherent tree rather than a mix of old and new. This is a FULL upgrade, not
 # a database refresh plus a selective install -- the latter is the partial
 # upgrade pattern, and it matters here because the packaged runtime is
@@ -263,9 +263,14 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
     fi
     echo "==> Applying Windows ZLE surrogate-pair patch..."
     rm -rf "$ZLE_BACKUP"
+    # Armed BEFORE the first backup, not after the patch applies. Setting it
+    # afterwards left a window in which a patch was on disk but the trap
+    # still saw an empty flag and did nothing -- exactly the "patched sources
+    # left behind" state. Restoring a file that was never modified is a
+    # harmless no-op, so arming early costs nothing and closes the window.
+    ZLE_RESTORE_FROM_BACKUP=1
     backup_patch_targets Src/Zle/zle.h Src/Zle/zle_move.c
     git -C "$SRC" apply "$ZLE_PATCH"
-    ZLE_RESTORE_FROM_BACKUP=1
 
     # Same lifecycle, so it rides along with the ZLE patch's checksum gate
     # and backup: both are applied to a pristine tree here and reverted by
@@ -274,16 +279,27 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
     echo "==> Applying Windows drive-path (:A/:a/:P) patch..."
     backup_patch_targets Src/hist.c Src/subst.c
     git -C "$SRC" apply "$DRIVE_PATCH"
-elif [ -f "$ZLE_BACKUP/Src/Zle/zle.h" ] && \
-     [ -f "$ZLE_BACKUP/Src/Zle/zle_move.c" ] && \
-     grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2>/dev/null; then
-    # A previous run was interrupted after patching. Rebuild the restore
-    # list from whatever the backup actually holds, so the trap below puts
-    # every patched file back, not just the ZLE pair.
+elif [ -d "$ZLE_BACKUP" ]; then
+    # A previous run was interrupted after patching. Recover from the backup
+    # directory alone rather than from a sentinel in one particular file:
+    # keying on ZSH_IS_HIGH_SURROGATE meant a leftover in hist.c/subst.c went
+    # unnoticed whenever zle.h happened to be clean, which is reachable if a
+    # run dies between the two patches. A backup only exists because a patch
+    # run started, so its presence is the honest signal.
+    #
+    # Each file is compared against its backup, so files that were never
+    # patched (or were already restored) are skipped and the trap does not
+    # clobber anything with a stale copy.
     for _leftover in Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c; do
-        [ -f "$ZLE_BACKUP/$_leftover" ] && PATCHED_FILES="$PATCHED_FILES $_leftover"
+        if [ -f "$ZLE_BACKUP/$_leftover" ] && \
+           ! cmp -s "$ZLE_BACKUP/$_leftover" "$SRC/$_leftover"; then
+            PATCHED_FILES="$PATCHED_FILES $_leftover"
+            ZLE_RESTORE_FROM_BACKUP=1
+        fi
     done
-    ZLE_RESTORE_FROM_BACKUP=1
+    if [ -n "$ZLE_RESTORE_FROM_BACKUP" ]; then
+        echo "==> Found patched sources left by an interrupted run; will restore on exit"
+    fi
 fi
 
 # --- preconfig, configure (in build/), make ---------------------------------
@@ -763,27 +779,6 @@ killwin() {
   done
   return $zsh_portable_status
 }
-if [[ -o interactive ]]; then
-  PROMPT="%n@%~%# "
-  zsh_portable_fix_keys() {
-    local zsh_portable_keymap
-    for zsh_portable_keymap in main emacs viins vicmd; do
-      bindkey -M "$zsh_portable_keymap" "^M" accept-line 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^J" accept-line 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^?" backward-delete-char 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^H" backward-delete-char 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^[[A" up-line-or-history 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^[[B" down-line-or-history 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^[[C" forward-char 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^[[D" backward-char 2>/dev/null
-      bindkey -M "$zsh_portable_keymap" "^[[200~" bracketed-paste 2>/dev/null
-    done
-    stty erase "^?" 2>/dev/null || stty erase "^H" 2>/dev/null
-  }
-  zsh_portable_fix_keys
-  precmd_functions=(${precmd_functions:#zsh_portable_fix_keys} zsh_portable_fix_keys)
-fi
-
 # ZDOTDIR deliberately stays pointing at the portable dir for the whole
 # session tree (ZSH_ORIG_ZDOTDIR/ZSH_PORTABLE_DIR/ZSH_WIN_HOME stay
 # exported too): that is what lets a nested zsh.exe, spawned from inside
@@ -814,10 +809,42 @@ fi
 unset zsh_portable_dir zsh_portable_dir_win
 EOF_ZSHENV
 
+cp "$REPO/helper/zshrc.sh" "$BUILD/bin/zshrc.sh"
+chmod 644 "$BUILD/bin/zshrc.sh"
+
+# ZDOTDIR points at the portable dir (see .zshenv above), so zsh looks for
+# .zshrc here. Load the portable default zshrc.sh first, then hand off to the
+# user's real .zshrc with ZDOTDIR temporarily set the way that file expects.
+cat > "$BUILD/bin/.zshrc" <<'EOF_RC'
+zsh_portable_default_zshrc=${ZSH_PORTABLE_DIR:-${ZDOTDIR:-}}/zshrc.sh
+if [[ -r $zsh_portable_default_zshrc ]]; then
+  source $zsh_portable_default_zshrc
+fi
+unset zsh_portable_default_zshrc
+
+if [[ -n ${ZSH_ORIG_ZDOTDIR:-} ]]; then
+  zsh_portable_user_zdotdir=${ZSH_ORIG_ZDOTDIR//\\//}
+  if [[ $zsh_portable_user_zdotdir != ${${ZSH_PORTABLE_DIR:-}//\\//} && \
+        -r $zsh_portable_user_zdotdir/.zshrc ]]; then
+    ZDOTDIR=$zsh_portable_user_zdotdir
+    source $zsh_portable_user_zdotdir/.zshrc
+    ZDOTDIR=${ZSH_PORTABLE_DIR:-$zsh_portable_user_zdotdir}
+    export ZDOTDIR
+  fi
+  if (( $+functions[zsh_portable_fix_keys] )); then
+    zsh_portable_fix_keys
+  fi
+  if (( $+functions[zsh_portable_fix_locale] )); then
+    zsh_portable_fix_locale
+  fi
+  unset zsh_portable_user_zdotdir
+fi
+EOF_RC
+
 # Forwarding stubs for the remaining startup files: ZDOTDIR points at the
-# portable dir (see .zshenv above), so zsh looks for these HERE; each one
-# hands off to the user's real counterpart.
-for rc in .zshrc .zprofile .zlogin; do
+# portable dir, so zsh looks for these HERE; each one hands off to the user's
+# real counterpart.
+for rc in .zprofile .zlogin; do
 cat > "$BUILD/bin/$rc" <<EOF_RC
 # Forwarding stub: ZDOTDIR points at the portable runtime dir for the
 # whole session (see .zshenv there); this loads the user's real $rc
