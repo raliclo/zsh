@@ -3,8 +3,8 @@
 #   zle.h, zle_move.c -> windows-zle-surrogate-pairs.patch
 #   hist.c, subst.c   -> windows-drive-abspath.patch
 # Verified with: sha256sum -c helper/patches/checksum.txt
-# generated: 2026-08-15T17:32:56Z
+# generated: 2026-08-26T04:32:12Z
 28da9e955887b07514082855a29933c26c732a2795c05c7d17924bd850ac258f *Src/Zle/zle.h
 dc185d2ac3c45bebd98216dc573dabd7789184a17645898eec3b781c6a03f0bc *Src/Zle/zle_move.c
 8870647f75ad8b783b40645ddc114070f05c3780e768e0fe5367cd1e65435c7b *Src/hist.c
-cebfd7fb38e4f3ea9d22839f67cf69dd331dc8e73681595b63405ddfed24aacc *Src/subst.c
+cb1146bcad4eddbdef723cf7a64f96812d10f20cfab21059cb1c02261ab07235 *Src/subst.c
