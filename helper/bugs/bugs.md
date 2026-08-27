@@ -101,3 +101,40 @@ already documented in `helper/test/test_windows_packaging.zsh`.
 
 **Rule:** use the bundled tools *through* the packaged zsh. If a call from
 Git Bash is unavoidable, pass `C:/...` form, which works.
+
+---
+
+## `local path` (and `path=`, `for path in`) silently empties `PATH`
+
+Not Windows-specific — a zsh-language trap, identical on macOS/Linux — but it
+bit this port during the sh→zsh conversion and shares the same shape as the
+entries above: no error, just plausible wrong state that surfaces far away.
+
+`path` is tied to `PATH` as an array, so spelling it as an ordinary variable
+touches the real `PATH`. Measured on this build:
+
+```
+zsh -f -c 'f(){ local path; print in $#PATH }; print before $#PATH; f; print after $#PATH'
+before 1879
+in     0            # PATH emptied for the function's lifetime
+after  1879         # ...and restored on return
+
+zsh -f -c 'f(){ local path; ls / }; ls /; f'
+top:     ls FOUND
+in-func: ls NOT FOUND (rc=127)     # every PATH lookup fails inside f
+after:   ls FOUND
+```
+
+The self-healing is what makes it worse than a top-level `path=(...)`: the
+breakage vanishes the instant control leaves the function, so the failure is
+read as "the tool is missing" rather than "PATH was clobbered here." Same trap
+applies to `for path in ...` (each iteration assigns `path`) and to `watch`,
+`status`, `options`, `cdpath`, `manpath`, `fpath`, `argv`, `fignore`.
+
+**This is not a zsh defect and must not be patched** — the `path`/`PATH`
+tie-in is deliberate. The fix is at the usage level: never spell these as plain
+variables (`path`→`dir_path`, `watch`→`watch_list`). `module_path` is exempt —
+it is essentially always meant as the special parameter. Enforced by
+`helper/test/test_reserved_param_names.zsh`, which fails the build if any helper
+script reintroduces one; opt out for a genuinely-intended special parameter
+with a `reserved-param-ok` comment on the line.
