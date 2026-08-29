@@ -451,6 +451,35 @@ test_windows_exe_wrappers() {
     fi
 }
 
+# --- ...but "bypass" must not mean the blanket '*'. Excluding everything also
+# suppresses MSYS's own //x -> /x collapse, so the Git Bash idiom
+# `taskkill //F //IM foo` arrived as a literal '//F' and was rejected: exit 1
+# with the target process still ALIVE. A kill that reports failure but is read
+# as done is the expensive shape -- see helper/bugs/bugs.md. The wrapper now
+# excludes only the tools' own option prefixes, which keeps the single-slash
+# Microsoft form safe from conversion AND lets the double-slash form collapse.
+# Assert BOTH spellings parse. A nonexistent image name is used so nothing is
+# killed: "not found" proves the option was understood, whereas
+# "Invalid argument/option" is the regression being guarded against. ---------
+test_taskkill_accepts_both_slash_forms() {
+    local out desc spec
+    for desc spec in \
+        "taskkill /F /IM"    'taskkill /F /IM zz_no_such_proc_xyz.exe' \
+        "taskkill //F //IM"  'taskkill //F //IM zz_no_such_proc_xyz.exe' \
+        "taskkill /PID /F"   'taskkill /PID 999999 /F' \
+        "taskkill //PID //F" 'taskkill //PID 999999 //F' \
+        "tasklist /FI"       'tasklist /FI "IMAGENAME eq zz_no_such_proc_xyz.exe"' \
+        "tasklist //FI"      'tasklist //FI "IMAGENAME eq zz_no_such_proc_xyz.exe"'
+    do
+        out=$("$LAUNCHER" -c "$spec" 2>&1)
+        if [[ $out == *"Invalid argument"* || $out == *[A-Za-z]:/*FI* ]]; then
+            fail_test "$desc is understood (MSYS did not rewrite the option)" "got: ${(qq)out}"
+        else
+            pass_test "$desc is understood (MSYS did not rewrite the option)"
+        fi
+    done
+}
+
 # --- MSYS rewrites slash-prefixed argv for native Windows programs, so
 # e-invoice barcode test data such as /AB12+-. can be corrupted before Node
 # receives it. Keep JavaScript runtime/test entry points under the same
@@ -950,6 +979,7 @@ test_version_txt_records_bundled_tools
 test_xterm_terminfo_bundled
 test_bracket_tool_lookup
 test_windows_exe_wrappers
+test_taskkill_accepts_both_slash_forms
 test_javascript_wrappers_preserve_slash_prefixed_argv
 test_utf8_filename_roundtrip
 test_user_lc_all_is_sanitized
