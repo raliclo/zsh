@@ -9,23 +9,31 @@
 #   sh helper/scoop_install.sh --release
 #
 # What it does:
-#   1. Zips build/bin/*  ->  build/package/zsh.zip
+#   1. Packs build/bin/*  ->  build/package/zsh.tar.zst
 #   2. Regenerates bucket/zsh.json with the version and sha256 hash
 #      (GitHub Release asset URL)
-#   3. Optionally uploads zsh.zip to one stable GitHub Release tag
+#   3. Optionally uploads zsh.tar.zst to one stable GitHub Release tag
+#
+# zstd rather than zip, since 2026-08-29. Both ends were verified before the
+# switch rather than assumed: Windows' own bsdtar 3.8.4 is built with
+# libzstd 1.5.7, so `tar -a -cf x.tar.zst` needs no extra tool; and scoop
+# extracts it because Expand-7zipArchive strips the .zst, sees a name still
+# ending in .tar, and runs the second pass itself (decompress.ps1, $IsTar).
+# 7-Zip only gained zstd support in its 26.x line -- on an older 7-Zip the
+# install side would fail, so this is a floor to be aware of, not a free win.
 #   4. scoop install bucket/zsh.json or build/local-manifest/zsh.json, which:
 #        - extracts to  ~/scoop/apps/zsh/<version>\   (+ 'current' junction)
 #        - creates the shim  ~/scoop/shims/zsh        (from zsh-loader.exe)
 #        - uses the packaged .zshenv bootstrap so zsh finds dynamic modules
 #
-# --package-only stops after step 2: it refreshes the zip and the manifest
+# --package-only stops after step 2: it refreshes the archive and the manifest
 # hash (which have to be regenerated together, since the manifest pins the
-# zip's sha256) but leaves the currently installed zsh alone. Use it when
+# archive's sha256) but leaves the currently installed zsh alone. Use it when
 # preparing a commit without disturbing a working install. --upload-release
 # publishes the package asset without installing. --install-remote uploads the
 # asset and installs from bucket/zsh.json. --release is shorthand for
 # --upload-release --install-remote. The GitHub Release tag is stable
-# (default: zsh-portable) and the zsh.zip asset is overwritten each run.
+# (default: zsh-portable) and the zsh.tar.zst asset is overwritten each run.
 
 set -e
 
@@ -231,7 +239,8 @@ fi
 VERSION="$BASE_VERSION.${BUILD_DATE}v${BUILD_SEQ}.${SHORT_SHA}"
 echo "==> Build version: $VERSION"
 PACKAGE="$BUILD/package"
-ZIP="$PACKAGE/zsh.zip"
+ARCHIVE_NAME=zsh.tar.zst
+ARCHIVE="$PACKAGE/$ARCHIVE_NAME"
 REPO_WIN=$(to_windows_path "$REPO")   # Windows-style path (C:/...)
 SCOOP_HOME=$(scoop_home)
 TAR_EXE=$(find_windows_tar) || {
@@ -251,20 +260,21 @@ fi
 ORIGIN=$(github_repo_url "$(git -C "$REPO" remote get-url "$FORK_REMOTE")")
 GITHUB_REPO=${ORIGIN#https://github.com/}
 RELEASE_TAG=${ZSH_RELEASE_TAG:-zsh-portable}
-PUBLIC_URL="$ORIGIN/releases/download/$RELEASE_TAG/zsh.zip"
+PUBLIC_URL="$ORIGIN/releases/download/$RELEASE_TAG/$ARCHIVE_NAME"
 
-# --- 1. Zip the portable runtime --------------------------------------------
+# --- 1. Pack the portable runtime -------------------------------------------
 # Windows' bsdtar is used because PowerShell's Compress-Archive cannot read
-# the MSYS2-built binaries.
-echo "==> Packaging build/bin -> build/package/zsh.zip"
+# the MSYS2-built binaries. -a picks the format from the NAME, and this
+# bsdtar carries libzstd, so .tar.zst needs no external zstd binary.
+echo "==> Packaging build/bin -> build/package/$ARCHIVE_NAME"
 mkdir -p "$PACKAGE"
-rm -f "$ZIP"
-"$TAR_EXE" -a -cf "$REPO_WIN/build/package/zsh.zip" \
+rm -f "$ARCHIVE"
+"$TAR_EXE" -a -cf "$REPO_WIN/build/package/$ARCHIVE_NAME" \
     -C "$REPO_WIN/build/bin" .
-[ -f "$ZIP" ] || { echo "error: zip creation failed" >&2; exit 1; }
+[ -f "$ARCHIVE" ] || { echo "error: archive creation failed" >&2; exit 1; }
 
-HASH=$(sha256sum "$ZIP" | awk '{print $1}')
-[ -n "$HASH" ] || { echo "error: could not hash zip" >&2; exit 1; }
+HASH=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+[ -n "$HASH" ] || { echo "error: could not hash archive" >&2; exit 1; }
 echo "==> sha256: $HASH"
 
 # --- 2. Regenerate the scoop manifest ----------------------------------------
@@ -293,9 +303,9 @@ EOF
 echo "==> Wrote $BUCKET/zsh.json (url: $PUBLIC_URL)"
 
 # A local-file variant of the manifest, so the install can be tested before
-# the zip is uploaded to the GitHub Release the published manifest points at.
+# the archive is uploaded to the Release the published manifest points at.
 mkdir -p "$BUILD/local-manifest"
-sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/package/zsh.zip\"#" \
+sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/package/$ARCHIVE_NAME\"#" \
     "$BUCKET/zsh.json" > "$BUILD/local-manifest/zsh.json"
 
 if [ -n "$UPLOAD_RELEASE" ]; then
@@ -308,17 +318,22 @@ if [ -n "$UPLOAD_RELEASE" ]; then
 
 Version: $VERSION
 Commit: $COMMIT
-Asset: zsh.zip
+Asset: $ARCHIVE_NAME
 "
-    echo "==> Uploading $ZIP to GitHub Release $RELEASE_TAG ($GITHUB_REPO)..."
+    echo "==> Uploading $ARCHIVE to GitHub Release $RELEASE_TAG ($GITHUB_REPO)..."
     if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
         gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPO" \
             --title "zsh portable" \
             --notes "$RELEASE_NOTES"
-        gh release upload "$RELEASE_TAG" "$ZIP" --repo "$GITHUB_REPO" --clobber
+        gh release upload "$RELEASE_TAG" "$ARCHIVE" --repo "$GITHUB_REPO" --clobber
+        # The zip this replaced would otherwise stay on the release forever,
+        # downloadable and pinned by no manifest -- a stale artifact that looks
+        # current. Removing it is not fatal if it is already gone.
+        gh release delete-asset "$RELEASE_TAG" zsh.zip --repo "$GITHUB_REPO" --yes 2>/dev/null \
+            && echo "==> Removed the superseded zsh.zip asset" || :
     else
-        gh release create "$RELEASE_TAG" "$ZIP" \
+        gh release create "$RELEASE_TAG" "$ARCHIVE" \
             --repo "$GITHUB_REPO" \
             --target "$COMMIT" \
             --title "zsh portable" \
@@ -327,7 +342,7 @@ Asset: zsh.zip
 fi
 
 if [ -n "$PACKAGE_ONLY" ]; then
-    echo "==> --package-only: zip and manifest refreshed; install left untouched."
+    echo "==> --package-only: archive and manifest refreshed; install left untouched."
     echo "    Upload and install from GitHub Release with:"
     echo "      sh helper/scoop_install.sh --release"
     echo "    or directly from the local manifest:"

@@ -525,6 +525,16 @@ EOF_FSTAB
     mkdir -p bin/usr/bin
     cp bin/zsh.exe bin/usr/bin/zsh.exe
     cp bin/*.dll bin/usr/bin/
+    # libzsh is named with configure's DL_EXT, which is .so whenever
+    # config.guess reads the toolchain as mingw rather than cygwin -- and that
+    # flips with MSYS2 updates, per the DL_EXT note further up. A *.dll glob
+    # silently misses it in the .so case, and usr/bin/zsh.exe -- the real
+    # interpreter, the launcher only forwards to it -- then starts, fails to
+    # find its core library, prints NOTHING and exits 0. Through the launcher
+    # it still worked (the bundle root is on PATH by then), so the whole test
+    # suite passed with the direct interpreter broken. Copy it by the name it
+    # actually has. Redundant when DL_EXT=dll, which costs one overwrite.
+    cp bin/libzsh-*.\$DL_EXT bin/usr/bin/
 
     # zsh.cmd can only be run via cmd.exe's own batch-file parser, which
     # re-tokenizes the incoming command line before this script ever runs:
