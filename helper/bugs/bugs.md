@@ -104,6 +104,62 @@ Git Bash is unavoidable, pass `C:/...` form, which works.
 
 ---
 
+## `MSYS2_ARG_CONV_EXCL='*'` breaks `//F`, and the kill silently does not happen
+
+`taskkill //F //IM foo.exe` — the standard Git Bash spelling — failed inside
+the packaged zsh with `ERROR: Invalid argument/option - '//F'`, **and the
+target process stayed alive**. It was not a zsh defect: the cause was our own
+wrapper, which set the blanket exclusion.
+
+The two spellings are correct in *opposite* contexts, which is what made this
+expensive to chase — muscle memory from Git Bash is wrong here, and nothing
+said so. Measured (nonexistent image name, so nothing dies):
+
+| context | conversion | `//F //IM` | `/F /IM` | `-f -im` |
+|---|---|---|---|---|
+| Git Bash | on | ok | `Invalid argument 'F:/'` | ok |
+| `zsh -f` (no zshrc) | on | ok | `Invalid argument 'F:/'` | ok |
+| packaged zsh, old wrapper | **off** | `Invalid argument '//F'` | ok | ok |
+
+Single-slash `/F` is rewritten into the path `F:/` when conversion is on, which
+is exactly why the `//F` idiom exists. Turning conversion fully off with `'*'`
+protects `/F` but also suppresses MSYS's own `//x` → `/x` collapse, so `//F`
+arrives literally.
+
+End-to-end against a real process — the reason this rates an entry rather than
+a footnote:
+
+```
+//F //IM   rc=1  alive_after=1   *** SURVIVED ***
+/F  /IM    rc=0  alive_after=0   killed
+-f  -im    rc=0  alive_after=0   killed
+```
+
+`taskkill` does report failure, but a caller that does not check the exit
+status reads "killed" from a command that killed nothing.
+
+**Fix — exclude the option prefixes, not everything** (`helper/compile.sh`):
+
+```zsh
+MSYS2_ARG_CONV_EXCL='/F;/FI;/IM;/P;/PID;/S;/T;/U' command taskkill.exe "$@"
+```
+
+Now `/F` is protected from conversion *and* `//F` still reaches the collapse,
+so **both spellings work**. The lists come from `taskkill /?` and `tasklist /?`
+verbatim; neither tool accepts a POSIX path, so scoping costs nothing. Note
+this does **not** generalize to `wsl.exe`, which genuinely receives POSIX paths
+and must keep `'*'`.
+
+`tasklist` had the same hole and was not wrapped at all (`/FI` became
+`<cwd>/FI`); it is wrapped now. Pinned by
+`test_taskkill_accepts_both_slash_forms` in
+`helper/test/test_windows_packaging.zsh`.
+
+**Portable spelling:** `taskkill -f -im name.exe` works in every context above,
+conversion on or off, so it needs no knowledge of which mode you are in.
+
+---
+
 ## `local path` (and `path=`, `for path in`) silently empties `PATH`
 
 Not Windows-specific — a zsh-language trap, identical on macOS/Linux — but it

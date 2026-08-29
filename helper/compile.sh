@@ -736,11 +736,28 @@ if [[ -n ${ZSH_START_CWD:-} ]]; then
   unset ZSH_START_CWD
   unset zsh_start_cwd
 fi
+# taskkill/tasklist take /X options, which MSYS would otherwise rewrite into
+# paths (/F -> F:/, /FI -> <cwd>/FI). The exclusion below names those exact
+# option prefixes instead of the blanket '*' on purpose: excluding everything
+# also suppresses MSYS's own //x -> /x collapse, which is what the Git Bash
+# idiom `taskkill //F //IM foo` relies on. Under '*' that spelling reached
+# taskkill as a literal '//F' and was rejected -- exit 1 with the process left
+# ALIVE, i.e. a kill that looks done and is not. Naming the prefixes keeps the
+# single-slash Microsoft form protected AND lets the double-slash form collapse,
+# so both spellings work. Option sets are taskkill /? and tasklist /? verbatim;
+# neither tool takes a POSIX path argument, so scoping loses nothing.
+# See helper/bugs/bugs.md.
 function taskkill.exe {
-  MSYS2_ARG_CONV_EXCL='*' command taskkill.exe "$@"
+  MSYS2_ARG_CONV_EXCL='/F;/FI;/IM;/P;/PID;/S;/T;/U' command taskkill.exe "$@"
 }
 taskkill() {
   taskkill.exe "$@"
+}
+function tasklist.exe {
+  MSYS2_ARG_CONV_EXCL='/APPS;/FI;/FO;/M;/NH;/P;/S;/SVC;/U;/V' command tasklist.exe "$@"
+}
+tasklist() {
+  tasklist.exe "$@"
 }
 function wsl.exe {
   MSYS2_ARG_CONV_EXCL='*' command wsl.exe "$@"
