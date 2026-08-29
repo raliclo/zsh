@@ -451,6 +451,33 @@ test_windows_exe_wrappers() {
     fi
 }
 
+# --- usr/bin/zsh.exe is the REAL interpreter; the root zsh.exe is a launcher
+# that forwards to it. It must therefore run on its own, without the bundle
+# root already on PATH to supply libzsh.
+#
+# This exists because the whole suite passed while it was broken. compile.sh
+# copied the runtime libraries into usr/bin with a `bin/*.dll` glob, and
+# libzsh is named with configure's DL_EXT -- which became .so when an MSYS2
+# update changed what config.guess reports. The glob then matched nothing,
+# usr/bin/zsh.exe could not find its core library, and it printed NOTHING and
+# exited 0. Every existing test went through the launcher, by which point the
+# bundle root was on PATH and the library resolved, so 43 tests passed with
+# the real interpreter unable to start. Exercise it the way a bare
+# `#!/usr/bin/zsh` shebang would. ------------------------------------------
+test_usr_bin_zsh_runs_standalone() {
+    local out
+    # env -i would also drop the variables MSYS itself needs; narrowing PATH to
+    # the system directory is enough to remove the bundle root that was hiding
+    # the fault, while leaving the process otherwise ordinary.
+    out=$(PATH=/c/Windows/System32 "$BINDIR/usr/bin/zsh.exe" -f -c 'printf "ZSHOK %s\n" $ZSH_VERSION' 2>&1)
+    if [[ $out == ZSHOK* ]]; then
+        pass_test "usr/bin/zsh.exe runs without the bundle root on PATH"
+    else
+        fail_test "usr/bin/zsh.exe runs without the bundle root on PATH" \
+            "got: ${(qq)out} -- libzsh missing from usr/bin? (compile.sh copies it by \$DL_EXT)"
+    fi
+}
+
 # --- ...but "bypass" must not mean the blanket '*'. Excluding everything also
 # suppresses MSYS's own //x -> /x collapse, so the Git Bash idiom
 # `taskkill //F //IM foo` arrived as a literal '//F' and was rejected: exit 1
@@ -946,11 +973,16 @@ test_scoop_install_uses_github_release_assets() {
         fail_test "scoop install flow uses GitHub Release assets" "missing installer or manifest"
         return
     fi
+    # The archive name is matched through $ARCHIVE_NAME rather than spelled
+    # literally: the format moved from .zip to .tar.zst on 2026-08-29, and a
+    # hardcoded name here fails the moment it moves again while saying nothing
+    # about whether the Release flow is intact, which is what this test is for.
     if grep -q 'build/release' $installer $manifest 2>/dev/null ||
-       grep -q 'raw\.githubusercontent.*zsh\.zip' $installer $manifest 2>/dev/null; then
+       grep -q 'raw\.githubusercontent.*zsh\.\(zip\|tar\)' $installer $manifest 2>/dev/null; then
         fail_test "scoop install flow uses GitHub Release assets" "found old branch/release-folder artifact reference"
     elif grep -q 'gh release' $installer &&
-         grep -q 'build/package/zsh\.zip' $installer &&
+         grep -q '^ARCHIVE_NAME=' $installer &&
+         grep -q 'build/package/\$ARCHIVE_NAME' $installer &&
          grep -q 'ZSH_RELEASE_TAG:-zsh-portable' $installer &&
          grep -q -- '--clobber' $installer &&
          grep -q '/releases/download/' $manifest; then
@@ -979,6 +1011,7 @@ test_version_txt_records_bundled_tools
 test_xterm_terminfo_bundled
 test_bracket_tool_lookup
 test_windows_exe_wrappers
+test_usr_bin_zsh_runs_standalone
 test_taskkill_accepts_both_slash_forms
 test_javascript_wrappers_preserve_slash_prefixed_argv
 test_utf8_filename_roundtrip
