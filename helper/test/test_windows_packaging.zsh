@@ -1042,6 +1042,40 @@ test_compile_runs_msys2_upgrade_helper() {
     fi
 }
 
+# --- the install must be CHECKED, not announced. scoop prints its refusal and
+# still exits 0, so a blocked uninstall left the previous build in place while
+# the script printed "Installed." and returned 0 -- the release was uploaded
+# correctly and the machine kept running the old zsh, with nothing to see.
+#
+# The blocker is matched by PATH, not by process name: scoop refuses while any
+# process whose image lives under the app dir runs, and this package ships the
+# MSYS2 tools, so the blocker was a packaged `grep`, then a packaged `sleep`.
+#
+# Source-level assertions, deliberately: exercising the real thing would mean
+# uninstalling the developer's zsh in the middle of a test run. The comment
+# says so rather than leaving a weaker check looking like a strong one. -----
+test_scoop_install_verifies_the_install() {
+    local installer=$TEST_REPO_ROOT/helper/scoop_install.sh
+    if [[ -z $TEST_REPO_ROOT || ! -f $installer ]]; then
+        fail_test "scoop_install.sh verifies the install" "missing installer"
+        return
+    fi
+    local -a missing=()
+    grep -q 'index($NF, d) == 1' $installer || missing+=("kill-by-path")
+    grep -q 'stop_zsh_processes "\$ZSH_APP_DIR"' $installer || missing+=("app-dir-arg")
+    grep -q 'could not uninstall the previous zsh' $installer || missing+=("uninstall-checked")
+    grep -q 'INSTALLED_VERSION' $installer || missing+=("version-compared")
+    grep -q 'installed version does not match' $installer || missing+=("version-mismatch-fails")
+    # Get-Process/Stop-Process cannot see the blocker, since it matches names.
+    grep -q 'Get-Process zsh' $installer && missing+=("still-matching-by-name")
+    if (( ${#missing} == 0 )); then
+        pass_test "scoop_install.sh verifies the install and stops blockers by path"
+    else
+        fail_test "scoop_install.sh verifies the install and stops blockers by path" \
+            "missing: ${missing[*]}"
+    fi
+}
+
 test_scoop_install_uses_github_release_assets() {
     local installer=$TEST_REPO_ROOT/helper/scoop_install.sh
     local manifest=$TEST_REPO_ROOT/bucket/zsh.json
@@ -1105,6 +1139,7 @@ test_multibyte_cursor_and_delete
 test_msys2_tmp_startup
 test_compile_runs_msys2_upgrade_helper
 test_scoop_install_uses_github_release_assets
+test_scoop_install_verifies_the_install
 
 print
 print "Results: $pass passed, $fail failed, $skip skipped"
