@@ -64,10 +64,16 @@ ZSHCMD=$BINDIR/zsh.cmd
 # module_path -- do it directly for the zpty-based test below.
 module_path=($BINDIR $module_path)
 
-typeset -i pass=0 fail=0
+typeset -i pass=0 fail=0 skip=0
 
 pass_test() { print -P "%F{green}PASS%f: $1"; (( ++pass )) }
 fail_test() { print -P "%F{red}FAIL%f: $1 -- $2"; (( ++fail )) }
+# A test whose PRECONDITION is absent is neither a pass nor a failure. Counting
+# it as a pass is the shape this suite exists to catch -- a green line for
+# something that never ran -- and counting it as a failure would report a
+# machine without WSL as a broken package. It is reported with its reason and
+# counted separately, so "0 skipped" is what says the run was complete.
+skip_test() { print -P "%F{yellow}SKIP%f: $1 -- $2"; (( ++skip )) }
 
 for f in $LAUNCHER $PUBLIC_EXE $INTERP $ZSHCMD; do
     if [[ ! -f $f ]]; then
@@ -448,6 +454,76 @@ test_windows_exe_wrappers() {
         pass_test "Windows executable wrappers bypass MSYS option-to-path conversion"
     else
         fail_test "Windows executable wrappers bypass MSYS option-to-path conversion" "got: ${(qq)out}"
+    fi
+}
+
+# --- wsl.exe hands its arguments to the WSL LOGIN SHELL, even when no shell
+# was asked for: `wsl.exe -- printf '%s' '[$HOME]'` answers
+# `zsh:1: no matches found: [/home/lowei]` -- printf expands nothing, so both
+# the substitution and the glob came from a shell nobody invoked. The damage is
+# silent whenever the metacharacter resolves: '/etc/hostn*me' arrives as
+# '/etc/hostname', and '$p' for an unset p arrives empty, which reads as "the
+# tool is not installed". --exec skips that shell, and is the fix.
+#
+# Asserted through the real wsl.exe rather than by grepping a script, because
+# the claim is about what CROSSES the boundary; a source-level check would pass
+# on a machine where the behaviour had changed underneath it. -------------
+test_wsl_exec_preserves_argv() {
+    local out
+    if ! MSYS2_ARG_CONV_EXCL='*' wsl.exe --exec true >/dev/null 2>&1; then
+        skip_test "wsl.exe --exec passes arguments through unexpanded" \
+            "no working WSL on this machine"
+        return
+    fi
+    # Three metacharacters, one call: a dollar that would be emptied, a glob
+    # that would silently MATCH something real, and brackets that would glob.
+    out=$(MSYS2_ARG_CONV_EXCL='*' wsl.exe --exec printf '%s|%s|%s' \
+            'A$pB' '/etc/hostn*me' '[$HOME]' 2>&1)
+    if [[ $out == 'A$pB|/etc/hostn*me|[$HOME]' ]]; then
+        pass_test "wsl.exe --exec passes arguments through unexpanded"
+    else
+        fail_test "wsl.exe --exec passes arguments through unexpanded" "got: ${(qq)out}"
+    fi
+}
+
+# --- the packaged environment exposes that as `exec-wsl`. Asserted by RUNNING
+# it, not by checking the function is defined: a wrapper that exists and
+# forwards to plain `wsl.exe` would satisfy a `whence` check while losing every
+# argument, which is the failure this helper exists to prevent. -------------
+test_exec_wsl_helper_preserves_argv() {
+    local out
+    if ! MSYS2_ARG_CONV_EXCL='*' wsl.exe --exec true >/dev/null 2>&1; then
+        skip_test "exec-wsl preserves arguments" "no working WSL on this machine"
+        return
+    fi
+    out=$("$LAUNCHER" -c "exec-wsl printf '%s|%s' 'A\$pB' '/etc/hostn*me'" 2>&1)
+    if [[ $out == 'A$pB|/etc/hostn*me' ]]; then
+        pass_test "exec-wsl preserves arguments"
+    else
+        fail_test "exec-wsl preserves arguments" "got: ${(qq)out}"
+    fi
+}
+
+# --- `winhelp` is where a user finds the helpers above. It is asserted to
+# NAME each one, because the failure mode of a hand-written list is that a
+# helper is added and the list is not updated -- and a list that omits the
+# thing you are looking for is worse than no list, since it reads as "this
+# port does not have that". Also asserts nothing is printed at STARTUP: a
+# banner would contaminate the output of every non-interactive zsh. --------
+test_winhelp_lists_the_helpers() {
+    local out startup
+    out=$("$LAUNCHER" -c 'winhelp' 2>&1)
+    if [[ $out == *exec-wsl* && $out == *killwin* && $out == *taskkill* ]]; then
+        pass_test "winhelp names exec-wsl, killwin and taskkill"
+    else
+        fail_test "winhelp names exec-wsl, killwin and taskkill" "got: ${(qq)out}"
+    fi
+    startup=$("$LAUNCHER" -c 'true' 2>&1)
+    if [[ -z $startup ]]; then
+        pass_test "startup prints nothing (winhelp is opt-in, not a banner)"
+    else
+        fail_test "startup prints nothing (winhelp is opt-in, not a banner)" \
+            "got: ${(qq)startup}"
     fi
 }
 
@@ -1011,6 +1087,9 @@ test_version_txt_records_bundled_tools
 test_xterm_terminfo_bundled
 test_bracket_tool_lookup
 test_windows_exe_wrappers
+test_wsl_exec_preserves_argv
+test_exec_wsl_helper_preserves_argv
+test_winhelp_lists_the_helpers
 test_usr_bin_zsh_runs_standalone
 test_taskkill_accepts_both_slash_forms
 test_javascript_wrappers_preserve_slash_prefixed_argv
@@ -1028,5 +1107,5 @@ test_compile_runs_msys2_upgrade_helper
 test_scoop_install_uses_github_release_assets
 
 print
-print "Results: $pass passed, $fail failed"
+print "Results: $pass passed, $fail failed, $skip skipped"
 (( fail == 0 ))
