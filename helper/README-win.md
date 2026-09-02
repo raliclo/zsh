@@ -204,17 +204,37 @@ The launcher/bootstrap also:
   BusyBox-backed Scoop shims, so those tools win inside zsh even if global
   Scoop shims are stale or broken;
 - sets the default interactive prompt to `username@current-path`;
-- defines `taskkill` and `taskkill.exe` wrappers that disable MSYS argument
-  conversion only for that native Windows command, so normal options such as
-  `/PID` and `/F` are not rewritten as POSIX paths;
+- defines `taskkill`/`taskkill.exe` and `tasklist`/`tasklist.exe` wrappers that
+  exclude those commands' **own option prefixes** (`/F`, `/IM`, `/PID`, `/FI`
+  …) from MSYS argument conversion, so `/F` is not rewritten as the path `F:/`.
+  The exclusion names the prefixes rather than using a blanket `*` on purpose:
+  a blanket exclusion also suppresses MSYS's own `//x` → `/x` collapse, and
+  `taskkill //F //IM foo` — the usual Git Bash spelling — then arrived as a
+  literal `//F` and was rejected **with the process left running**. Both
+  spellings work now, and `taskkill -f -im foo` works regardless of conversion;
 - defines `wsl` and `wsl.exe` wrappers that disable MSYS argument conversion
   only for that native Windows command, so WSL paths such as `/mnt/c/...` and
   native options such as `--cd` are passed to `wsl.exe` unchanged;
+- defines `exec-wsl`, which runs `wsl.exe --exec` with the same conversion
+  disabled. Use it whenever the arguments matter. Plain `wsl -- cmd args`
+  hands the arguments to the WSL **login shell** even though no shell was
+  asked for, and that shell expands them a second time: `$p` for an unset `p`
+  arrives empty (which reads as "the tool is not installed"), and
+  `/etc/hostn*me` arrives as `/etc/hostname` — a different string, at exit 0.
+  `--exec` skips that shell, so arguments cross verbatim and nothing needs
+  escaping. `wsl` is left alone because scripts that deliberately rely on the
+  far-side shell must keep working; see `helper/bugs/bugs.md`;
 - defines JavaScript runtime/test wrappers (`node`, `node.exe`, `npm`, `npx`,
   `pnpm`, `yarn`, `bun`, `deno`, and `.exe` variants where relevant) that
   disable MSYS argument conversion for those native Windows commands. This
   preserves literal slash-prefixed test data such as e-invoice barcodes
   (`/AB12+-.`) instead of rewriting them as paths under the zsh install root;
+- defines `winhelp`, which lists the Windows-only helpers this port adds
+  (`exec-wsl`, `killwin`, the `taskkill`/`tasklist` wrappers) and why each
+  exists. It is a command rather than a startup banner deliberately: a banner
+  is read once and then trains people to skip it, and it would have to be
+  guarded against every non-interactive use to avoid contaminating output.
+  Nothing is printed when a shell starts;
 - defines `killwin WINPID [...]`, a convenience wrapper around
   `taskkill /PID <WINPID> /F`; use it with the `WINPID` column from
   `ps -eW`, since zsh/MSYS `kill` expects the separate internal PID column;
