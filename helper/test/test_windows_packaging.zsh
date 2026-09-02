@@ -1061,7 +1061,14 @@ test_scoop_install_verifies_the_install() {
         return
     fi
     local -a missing=()
-    grep -q 'index($NF, d) == 1' $installer || missing+=("kill-by-path")
+    # Asserted through the MARKERS of the mechanism, not the literal awk
+    # expression: the first version of this test pinned `index($NF, d) == 1`,
+    # and then went red when that became `index(tolower($NF), d) == 1` to fix a
+    # real bug. A test that fails because the code improved, and whose failure
+    # says nothing about whether the behaviour still holds, is over-fitted.
+    grep -q 'ps -W' $installer || missing+=("enumerate-by-path")
+    grep -q 'to_windows_path "\$_szp_dir"' $installer || missing+=("normalize-path-form")
+    grep -q 'taskkill -f -pid' $installer || missing+=("kill-by-pid")
     grep -q 'stop_zsh_processes "\$ZSH_APP_DIR"' $installer || missing+=("app-dir-arg")
     grep -q 'could not uninstall the previous zsh' $installer || missing+=("uninstall-checked")
     grep -q 'INSTALLED_VERSION' $installer || missing+=("version-compared")
