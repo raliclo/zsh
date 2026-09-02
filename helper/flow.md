@@ -1,124 +1,175 @@
-# How this port keeps its PDCA cycle
+# How this port is built and how it improves
 
-Plan → Do → Check → Act, as actually practised here. The wording is ordinary;
-what makes it work in this repo is that each stage has a rule that has already
-been paid for by a failure, and those rules are written below with the failure
-that bought them.
+Two different axes, often confused, both needed:
 
-The cycle exists because of one recurring shape. Almost nothing here fails
-loudly. The compiler is silent, the exit status is zero, the test prints PASS,
-and the number has a plausible explanation. **Reading the output more carefully
-does not catch that class — only changing the method before the judgement
-does.** Every rule below is placed *before* a decision, not after it.
+| | **SDLC** — the pipeline | **PDCA** — the improvement loop |
+|---|---|---|
+| Answers | which stages a change passes through | how we know this one is right, and how the next is better |
+| Produces | updated software | updated *practice* |
+| Shape | a line, with a delivery at the end | a loop, with no end |
+
+They nest. One trip down the pipeline is one turn of the loop; and each stage
+of the pipeline has small loops inside it.
+
+Everything below exists because of one recurring shape. **Almost nothing here
+fails loudly.** The compiler is silent, the exit status is zero, the test
+prints PASS, and the number has a plausible explanation. Reading the output
+more carefully does not catch that class — only changing the method *before*
+the judgement does. So every gate below sits ahead of a decision, never after.
 
 ---
 
-## Plan — establish the fact before choosing the fix
+# Part 1 — SDLC: the pipeline
 
-**Measure the claim first, including claims from our own documents.**
+```
+  edit  →  build  →  test  →  package  →  release  →  install  →  verify
+```
 
-A report, a memory, or a paragraph in this repo is a starting hypothesis, not a
-finding. Two examples from the same week:
+Each stage has an acceptance condition that can say no. A stage is not "done"
+because it printed something reassuring.
+
+### 1. Edit
+
+- Changes go in with the **Edit tool**, never a script. A scripted
+  substitution reports success while the file is subtly wrong: it has renamed a
+  variable in a function but not in the loop calling it, and it has rewritten a
+  whole file LF→CRLF while claiming a 14-line change.
+- **`Src/` stays pristine.** Upstream changes live as `helper/patches/*.patch`,
+  applied at build time, restored by a trap.
+- Accept when: `git diff --stat` and `git diff --stat --ignore-all-space` agree
+  (whitespace/line-endings untouched), and `tr -dc '\r' | wc -c` is 0 for text
+  files. `grep`/`sed`/`awk` cannot see CR on MSYS and will report 0 regardless.
+
+### 2. Build — `helper/compile.sh`
+
+- Applies the patches, configures out-of-tree into `build/`, makes, then
+  assembles the portable runtime in `build/bin`.
+- Accept when: **`compile.sh`'s own exit code is 0**, and `Src/` is pristine
+  afterwards. Not the wrapper's exit code, and not the harness's notification —
+  both have reported success over a build that returned 1.
+- If a build is interrupted: check `git status Src/` (the restore trap may not
+  have run) **and** check for surviving `make.exe`. An interrupted build can
+  leave children alive that keep writing into `build/`, and the next configure
+  then picks up their `conftest.c` and fails somewhere unrelated.
+
+### 3. Test — `helper/test/*.zsh`
+
+- Accept when: every file exits 0 **and** the summary reads `N passed, 0
+  failed, 0 skipped`. `skipped` is not a pass: it means a precondition was
+  absent and the test never ran.
+- Strip ANSI before counting anything yourself. `grep -c 'FAIL:'` returned 0 on
+  a log containing a failure, because a colour escape sits between `FAIL` and
+  the colon.
+
+### 4. Package — `helper/scoop_install.sh`
+
+- Packs `build/bin` into `build/package/zsh.tar.zst` and regenerates
+  `bucket/zsh.json` with the version and sha256, which must be regenerated
+  together — the manifest pins the archive's hash.
+- Accept when: the archive **contains** what the fix added. Verifying the build
+  tree is not verifying the package; a fix has been present in `build/bin` and
+  absent from the archive.
+
+### 5. Release
+
+- Uploads to the stable `zsh-portable` tag and deletes the superseded asset.
+- Accept when: the asset list read back **from GitHub** shows what you expect,
+  and a **fresh download** hashes to the manifest value. The uploader's
+  "success" is not evidence.
+
+### 6. Install
+
+- `scoop install` from the manifest.
+- Accept when: the installed files' **sha256 match the build tree's**. Compare
+  files, not version strings — two different builds report the same
+  `$ZSH_VERSION`.
+
+### 7. Verify the thing users actually run
+
+- The shim, and `usr/bin/zsh.exe` **standalone**, since the root `zsh.exe` is
+  only a launcher that forwards to it.
+- Accept when: each prints what it should. Exit 0 is not enough — the real
+  interpreter once started, failed to find its core library, printed nothing,
+  and exited 0.
+
+**Provenance:** the version string embeds the commit the build came from. Commit
+before the final package, or the artifact names a commit that does not contain
+it. That has happened, and the install still worked, which is why nothing
+caught it.
+
+---
+
+# Part 2 — PDCA: the improvement loop
+
+### Plan — establish the fact before choosing the fix
+
+**Measure the claim first, including claims from our own documents.** A report,
+a memory, or a paragraph in this repo is a hypothesis.
 
 - `taskkill //F //IM` was reported as "fails under zsh". Measuring all four
-  contexts showed the two spellings are correct in *opposite* environments, and
-  that our own wrapper caused it — a fix aimed at the reported symptom would
-  have been aimed at the wrong layer.
-- `bugs.md` explained the WSL argument loss as "Git Bash consumes the quotes".
-  The same call from the packaged zsh lost the same byte. The document was
-  wrong, and it was wrong in the direction that sends someone to change their
-  shell instead of their call.
+  contexts showed the two spellings are correct in *opposite* environments and
+  that our own wrapper caused it. A fix aimed at the symptom would have hit the
+  wrong layer.
+- `bugs.md` blamed Git Bash for eating `$var` across the WSL boundary. The same
+  call from the packaged zsh lost the same byte — the document was wrong in the
+  direction that sends the reader to change their shell, which does nothing.
 
-**Decide what would disprove the plan before starting it.** For a packaging
-change that means naming the check up front — "does the archive still contain
-`usr/bin/libzsh-*`" — because a plan with no disproof is a plan that will be
-confirmed by whatever happens.
+**Name what would disprove the plan before starting.** A plan with no disproof
+gets confirmed by whatever happens.
 
-## Do — make the change where it belongs
+### Do — change it where it belongs
 
-- **`Src/` stays pristine.** Changes to upstream code live as
-  `helper/patches/*.patch`, applied at build time and restored by a trap. If a
-  build is interrupted the tree can be left patched; `git status Src/` says so,
-  and `git checkout -- Src/` is the restore. Verify the leftover diff is
-  *exactly* the patches before discarding it.
-- **Use the Edit tool, never a script, to change a file.** A scripted
-  substitution reports success while the file is subtly wrong: it has renamed a
-  variable in a function but not in the loop that calls it, and it has rewritten
-  a whole file from LF to CRLF while claiming a 14-line change.
-- **Fix the cause, not the reported symptom.** `DL_EXT` flipping from `dll` to
-  `so` was not a defect — `compile.sh` had documented that flip years-in and
-  reads the value rather than hardcoding it. The defect was one line that did
-  not follow its own document.
+Fix the cause, not the reported symptom. `DL_EXT` flipping `dll`→`so` was not a
+defect: `compile.sh` documents that flip and reads the value. The defect was one
+line 130 lines away that still assumed `.dll`.
 
-## Check — the stage that carries all the weight
+### Check — the stage that carries the weight
 
-**Nothing is "passing" until it has been checked by a method that could have
-said no.**
+- **Enter the gate before the judgement.** The mistake that repeated across days
+  here was skipping the check with the tool in reach; adding patterns to the
+  check cannot fix that.
+- **A test that has never been red does not count.** Every regression test here
+  was run against the broken build first.
+- **Exit status is not the result.** `scoop update '*'` returned 0 with one app
+  not upgraded.
+- **Do not trust your own filter.** See the ANSI/`grep -c` case above.
+- **Verify outward-facing results independently**, by reading back from the
+  other side.
 
-- **Enter the gate before the judgement, not after.** The one mistake that
-  repeated across days here was skipping the check with the tool in reach, and
-  that cannot be fixed by adding patterns to the check.
-- **A test that has never been red does not count.** Every regression test in
-  `helper/test/` was run against the broken build first.
-  `test_usr_bin_zsh_runs_standalone` was confirmed to produce empty output
-  before the fix and `ZSHOK` after; without that step it would only have proved
-  that some command exits 0.
-- **Exit status is not the result.** `scoop update '*'` returned 0 with nodejs
-  not upgraded. `usr/bin/zsh.exe` returned 0 while printing nothing because it
-  could not load its core library. Read what the thing produced.
-- **Do not judge from your own filter.** `grep -c 'FAIL:'` reported 0 failures
-  on a log that contained one, because a colour escape sits between `FAIL` and
-  the colon. Strip formatting before counting, and prefer the tool's own
-  summary line to a pattern you invented.
-- **Verify outward-facing results independently.** After a release upload, the
-  asset list is read back from GitHub and the artifact re-downloaded and hashed
-  against the manifest, rather than trusting the uploader's "success".
-- **Absent preconditions are neither pass nor fail.** `skip_test` exists so a
-  machine without WSL reports SKIP with a reason. A green line for something
-  that never ran is the failure mode this suite is built to catch.
+A test can also over-fit. When the archive moved `.zip`→`.tar.zst` the Release
+test failed correctly, and was then rewritten to assert the *mechanism*
+(`ARCHIVE_NAME` is defined and used) rather than a literal filename — so the
+next format change does not produce a failure that says nothing.
 
-A test can also be wrong in the direction of over-fitting. When the archive
-moved from `.zip` to `.tar.zst`, the Release test failed — correctly. It was
-then rewritten to assert the *mechanism* (`ARCHIVE_NAME` is defined and used)
-rather than the literal filename, so the next format change does not produce a
-failure that says nothing about whether the Release flow is intact.
+### Act — make the lesson outlive the session
 
-## Act — make the lesson outlive the session
-
-Three artefacts, and the third is the one that is usually skipped:
-
-1. **`helper/bugs/bugs.md`** — the finding, with the measurement that
-   established it, not the conclusion alone. Entries are corrected when later
-   evidence contradicts them; the WSL entry carries its own correction date.
-2. **The code comment at the site** — why the non-obvious line is that way, so
-   the next person editing it sees the reason without finding the document.
-3. **A test that fails if it regresses.** This is the step that separates a
-   lesson from a wish. `compile.sh` had *already documented* that `DL_EXT`
-   flips, and a line 130 lines away still assumed `.dll` — knowing and writing
-   it down were both insufficient. Where a mistake has crossed sessions, the
-   corrective must be a check that runs, not another paragraph.
-
-Then close the loop: the next cycle starts by re-measuring, because the fix
-itself is a claim.
+1. **`helper/bugs/bugs.md`** — the finding *with its measurement*. Entries are
+   corrected when later evidence contradicts them; the WSL entry carries its
+   own correction date.
+2. **A comment at the site** — why the non-obvious line is that way.
+3. **A test that fails if it regresses.** The step usually skipped, and the one
+   that separates a lesson from a wish: `compile.sh` had *already documented*
+   that `DL_EXT` flips, and a line elsewhere still assumed `.dll`. Knowing and
+   writing it down were both insufficient.
 
 ---
 
-## The loop in one worked example
+# The two axes in one worked example
 
-Reported: "is the packaged file larger or smaller after this change?"
+Reported: *"is the packaged file larger or smaller after this change?"*
 
-- **Plan** — answer it by comparing the two archives file by file, not by
-  reasoning about what was edited.
+- **Plan** — answer by comparing the two archives file by file, not by reasoning
+  about what was edited.
 - **Do** — nothing yet; the question is a measurement.
-- **Check** — the comparison showed the new package *smaller*, which
-  contradicted the change (text was added). Following that contradiction
-  instead of accepting the number found 39 modules renamed `.dll` → `.so`, and
-  one file missing: `usr/bin/libzsh-*`. The real interpreter could not start,
-  printed nothing, and exited 0. The full suite was green throughout, because
-  every test reached zsh through the launcher, by which point the bundle root
-  was on `PATH` and the library resolved.
-- **Act** — fix the glob in `compile.sh`, add
-  `test_usr_bin_zsh_runs_standalone` with `PATH` narrowed to `System32`,
-  record the mechanism, and re-run the whole suite.
+- **Check** — the new package came out *smaller*, contradicting the change,
+  which had only added text. Following the contradiction instead of accepting
+  the number found 39 modules renamed `.dll`→`.so` and one file missing:
+  `usr/bin/libzsh-*`. The real interpreter could not start, printed nothing,
+  exited 0. The suite was green throughout, because every test reached zsh
+  through the launcher — by which point the bundle root was on `PATH` and the
+  library resolved.
+- **Act** — fix the glob (SDLC stage 2), add
+  `test_usr_bin_zsh_runs_standalone` (stage 3), record the mechanism, re-run
+  the pipeline from stage 2.
 
-The size answer was −13.71%. It was the least valuable output of the cycle.
+The size answer was −13.71%, and it was the least valuable output of the cycle.
