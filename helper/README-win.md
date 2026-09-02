@@ -292,17 +292,27 @@ The PowerShell/MSYS2 command shown in "Usage" runs `helper/scoop_install.sh`,
 which packages `build/bin` and installs it through scoop, using the manifest
 in `bucket/zsh.json`:
 
-1. Zips `build/bin/*` to `build/package/zsh.zip` (with Windows' bsdtar —
-   PowerShell's `Compress-Archive` cannot read the MSYS2-built binaries).
+1. Packs `build/bin/*` into `build/package/zsh.tar.zst` (with Windows' bsdtar,
+   which carries libzstd — PowerShell's `Compress-Archive` cannot read the
+   MSYS2-built binaries, and scoop unpacks `.tar.zst` because 7-Zip 26.x
+   understands zstd and its extractor makes the second, tar pass itself).
 2. Regenerates `bucket/zsh.json` with the version, the GitHub Release asset URL,
-   and its sha256 hash.
+   and its sha256 hash. The two are regenerated together because the manifest
+   pins the archive's hash.
 3. With `--release`, creates or updates one stable GitHub Release
-   (`zsh-portable` by default) and overwrites its `zsh.zip` asset; without it,
+   (`zsh-portable` by default) and overwrites its `zsh.tar.zst` asset, removing
+   the superseded `zsh.zip` if one is still there; without it,
    `build/local-manifest` is kept for local smoke installs.
-4. Runs `scoop install` (uninstalling any previous zsh first — **close any
-   running zsh processes before this step**, since scoop can't remove files a
-   running process still has open), which:
-   - extracts the zip to `~/scoop/apps/zsh/<version>\` and links
+4. Runs `scoop install`, uninstalling any previous zsh first. It stops whatever
+   is running out of the app directory beforehand, **matched by path rather
+   than by name**: scoop refuses to uninstall while any process whose image
+   lives under that directory runs, and this package ships the MSYS2 tools, so
+   the blocker is usually not called zsh — it has been a packaged `grep` and a
+   packaged `sleep`. The uninstall and the install are both verified
+   afterwards (the installed version must equal the one just packaged) and the
+   script exits non-zero if either did not happen; it used to print
+   `Installed.` and return 0 over an install scoop had refused. This step:
+   - extracts the archive to `~/scoop/apps/zsh/<version>\` and links
      `~/scoop/apps/zsh/current` to it — this is scoop's canonical location,
      derived from the manifest filename and `version` field;
    - creates the `~/scoop/shims/zsh` shim from the manifest's `zsh-loader.exe`
@@ -336,24 +346,24 @@ everything after `+` is build metadata and is *ignored* when comparing
 precedence, which would let two builds compare equal and reintroduce exactly
 this problem.
 
-One cost: scoop caches one ~56 MB zip per version, so the cache grows with
-each build. `scoop cache rm zsh` clears them; nothing installed depends on the
-cache.
+One cost: scoop caches one archive per version (~50 MB as `.tar.zst`, against
+~57 MB when this was a zip), so the cache grows with each build.
+`scoop cache rm zsh` clears them; nothing installed depends on the cache.
 
 ### Updating and removing
 
 Normal path after a rebuild — no uninstall needed:
 
 ```
-sh helper/scoop_install.sh --release        # zip + manifest + GitHub Release upload + remote install
+sh helper/scoop_install.sh --release        # archive + manifest + GitHub Release upload + remote install
 ```
 
-`--package-only` stops after regenerating the zip and manifest (they must be
-regenerated together, as the manifest pins the zip's sha256) and leaves the
-running install alone, which matters when something is currently using zsh.
+`--package-only` stops after regenerating the archive and manifest (they must
+be regenerated together, as the manifest pins the archive's sha256) and leaves
+the running install alone, which matters when something is currently using zsh.
 `--upload-release` publishes the GitHub Release asset without installing. Set
 `ZSH_RELEASE_TAG` to override the stable release tag; otherwise every publish
-reuses `zsh-portable` and replaces the single `zsh.zip` asset.
+reuses `zsh-portable` and replaces the single `zsh.tar.zst` asset.
 
 Fallback, for a forced clean reinstall — still needed if the cache is
 corrupt, the manifest and installed version have somehow converged, or an
