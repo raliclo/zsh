@@ -135,12 +135,43 @@ scoop_home() {
     printf '%s\n' "$HOME/scoop"
 }
 
+# Stop everything running OUT OF the zsh app directory -- by PATH, not by name.
+#
+# scoop refuses to uninstall an app while any process whose image path lives
+# under that app's directory is running, and this package ships the MSYS2
+# tools, so the blocker is usually not named zsh at all. Observed: scoop
+# reported "instances of zsh are still running" and listed a `grep`, and on the
+# next attempt a `sleep` -- both the packaged copies. Matching on the names
+# zsh/zsh-c/zsh-loader, as this did, could never see them.
+#
+# It is self-inflicted, which is what made it a loop: the shim check at the end
+# of a run starts zsh, whatever it leaves behind blocks the NEXT run's
+# uninstall, and that uninstall failing was not checked -- so the script
+# reported "Installed." over an install that never happened.
+#
+# ps -W (not PowerShell) because it reports the full Windows image path, which
+# is the thing being matched; taskkill takes the WINPID from the same listing.
+# Dash options survive MSYS argument conversion either way.
 stop_zsh_processes() {
-    if command -v powershell.exe >/dev/null 2>&1; then
-        powershell.exe -NoProfile -Command \
-            "Get-Process zsh,zsh-c,zsh-loader -ErrorAction SilentlyContinue | Stop-Process -Force" \
-            >/dev/null 2>&1 || true
-    fi
+    _szp_dir=$1
+    [ -n "$_szp_dir" ] || return 0
+    command -v ps >/dev/null 2>&1 || return 0
+    # ps -W reports WINDOWS paths (C:\Users\...) while $SCOOP_HOME is POSIX
+    # (/c/Users/...). Comparing the two directly matches nothing and kills
+    # nothing, silently -- the first version of this function did exactly that,
+    # and the uninstall went on failing while the killer reported no work.
+    # Normalize to one form, lowercased, before comparing.
+    _szp_win=$(to_windows_path "$_szp_dir" 2>/dev/null) || _szp_win=$_szp_dir
+    _szp_key=$(printf '%s' "$_szp_win" | tr 'A-Z' 'a-z' | tr '\\' '/')
+    ps -W 2>/dev/null \
+        | tr '\\' '/' \
+        | awk -v d="$_szp_key" 'index(tolower($NF), d) == 1 { print $4 }' \
+        | while read -r _szp_pid; do
+            [ -n "$_szp_pid" ] || continue
+            taskkill -f -pid "$_szp_pid" >/dev/null 2>&1 || true
+        done
+    # Windows releases the file handles a moment after the process goes.
+    sleep 1
 }
 
 run_shim_version() {
@@ -351,10 +382,27 @@ if [ -n "$PACKAGE_ONLY" ]; then
 fi
 
 # --- 3. Install through scoop ------------------------------------------------
-stop_zsh_processes
+ZSH_APP_DIR="$SCOOP_HOME/apps/zsh"
+stop_zsh_processes "$ZSH_APP_DIR"
 if scoop list zsh 2>/dev/null | grep -q '^zsh '; then
     echo "==> Removing previously installed zsh..."
     scoop uninstall zsh
+    # Checked rather than assumed. scoop prints its refusal and still exits 0,
+    # and the install that follows then reports "already installed" and leaves
+    # the OLD version in place -- an outcome indistinguishable from success in
+    # every line this script prints.
+    if scoop list zsh 2>/dev/null | grep -q '^zsh '; then
+        ZSH_APP_DIR_WIN=$(to_windows_path "$ZSH_APP_DIR" 2>/dev/null) || ZSH_APP_DIR_WIN=$ZSH_APP_DIR
+        echo "error: scoop could not uninstall the previous zsh." >&2
+        echo "       Something is still running out of $ZSH_APP_DIR_WIN." >&2
+        # Listed in the form ps reports, so the paths printed here can be
+        # compared with the paths matched above. Printing the POSIX form beside
+        # Windows-form process paths is how the mismatch above went unnoticed.
+        ps -W 2>/dev/null | tr '\\' '/' \
+            | awk -v d="$(printf '%s' "$ZSH_APP_DIR_WIN" | tr 'A-Z' 'a-z' | tr '\\' '/')" \
+                  'index(tolower($NF), d) == 1 { print "       still running: " $NF }' >&2
+        exit 1
+    fi
 fi
 echo "==> Clearing scoop download cache for zsh..."
 scoop cache rm zsh 2>/dev/null || true
@@ -365,11 +413,20 @@ else
     INSTALL_MANIFEST="$REPO_WIN/build/local-manifest/zsh.json"
     echo "==> Installing via scoop (from local zip)..."
 fi
-stop_zsh_processes
+stop_zsh_processes "$ZSH_APP_DIR"
 scoop install "$INSTALL_MANIFEST"
 
 # --- 4. Verify ---------------------------------------------------------------
-echo "==> Installed. Shim check:"
+# The version just packaged must be the version now installed. Without this the
+# script has reported success while scoop left the previous build in place.
+INSTALLED_VERSION=$(scoop list zsh 2>/dev/null | awk '$1 == "zsh" { print $2; exit }')
+if [ "$INSTALLED_VERSION" != "$VERSION" ]; then
+    echo "error: installed version does not match the one just packaged." >&2
+    echo "       packaged:  $VERSION" >&2
+    echo "       installed: ${INSTALLED_VERSION:-<nothing>}" >&2
+    exit 1
+fi
+echo "==> Installed $INSTALLED_VERSION. Shim check:"
 SHIM="$SCOOP_HOME/shims/zsh"
 if [ ! -x "$SHIM" ] && [ -x "$SCOOP_HOME/shims/zsh.cmd" ]; then
     SHIM="$SCOOP_HOME/shims/zsh.cmd"
