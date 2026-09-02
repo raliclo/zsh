@@ -775,6 +775,55 @@ function wsl.exe {
 wsl() {
   wsl.exe "$@"
 }
+# exec-wsl -- wsl.exe with the login shell taken out of the path.
+#
+# `wsl -- cmd args` hands the arguments to the WSL LOGIN shell even when no
+# shell was asked for, and that shell expands them a SECOND time. Measured:
+# `wsl.exe -- printf '%s' '[$HOME]'` answers
+# `zsh:1: no matches found: [/home/lowei]` -- printf expands nothing, so both
+# the substitution and the glob came from a shell nobody invoked.
+#
+# The damage is silent whenever the metacharacter resolves:
+#   '$p' with p unset -> empty         -- reads as "the tool is not installed"
+#   '/etc/hostn*me'   -> /etc/hostname -- a DIFFERENT string, at exit 0
+# A glob that matches nothing is the safe case, because it fails loudly.
+#
+# --exec removes that shell, so arguments cross verbatim and there is nothing
+# to escape -- which beats escaping, since escaping requires knowing every
+# metacharacter the far side has and missing one is silent. Plain `wsl` is
+# deliberately left as it was: scripts that rely on the far-side shell must
+# keep working, so this is a new name rather than a changed default.
+exec-wsl() {
+  MSYS2_ARG_CONV_EXCL='*' command wsl.exe --exec "$@"
+}
+# winhelp -- what this port adds that plain zsh does not have.
+#
+# A command rather than a startup banner on purpose: a banner is read once and
+# then becomes noise that trains people to skip it, and it would also have to
+# be guarded against every non-interactive use to avoid contaminating output.
+# Nothing here runs at startup; this is only a function definition.
+winhelp() {
+  printf '%s\n' \
+    'Windows helpers in this portable zsh:' \
+    '' \
+    '  exec-wsl CMD [ARG...]' \
+    '      wsl.exe --exec: arguments cross to WSL verbatim.' \
+    '      Plain `wsl` hands them to the WSL LOGIN SHELL, which expands them a' \
+    '      second time even when no shell was asked for -- an unset "$p" arrives' \
+    '      empty (reads as "not installed") and "/etc/hostn*me" arrives as' \
+    '      "/etc/hostname". Use this whenever the arguments matter.' \
+    '' \
+    '  killwin WINPID [...]' \
+    '      Kill by the WINPID column of `ps -eW`. MSYS `kill` takes the internal' \
+    '      Cygwin PID instead, which is a different number for the same process.' \
+    '' \
+    '  taskkill / tasklist' \
+    '      Wrapped so both spellings work: /F and //F, /IM and //IM. The dash' \
+    '      form (taskkill -f -im NAME) works regardless of argument conversion' \
+    '      and is the one to use in scripts.' \
+    '' \
+    'Details and the measurements behind them: helper/bugs/bugs.md'
+}
 zsh_portable_no_msys_arg_conv() {
   local zsh_portable_cmd=$1
   shift
