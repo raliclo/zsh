@@ -250,13 +250,31 @@ argument was NOT rewritten when it should have been**, and nothing said so.
 MSYS converts POSIX paths to Windows form when handing them to a native binary.
 It does that for a path through a directory, and for a path through a component
 that does not exist — but not for one through a regular **file**. Measured with
-`cmd.exe echo`, so no third-party tool is involved:
+two unrelated native programs, so neither of them is the cause:
 
 ```
-mid=realdir  (dir)     -> C:/Users/.../convprobe/realdir/out.txt     converted
-mid=afile    (file)    -> /c/Users/.../convprobe/afile/out.txt       NOT converted
-mid=nosuch   (missing) -> C:/Users/.../convprobe/nosuch/out.txt      converted
+                       cmd.exe echo                    attrib.exe
+mid=realdir  (dir)     C:/Users/.../realdir/out.txt    File not found - C:/...
+mid=afile    (file)    /c/Users/.../afile/out.txt      Invalid switch - /c/...
+mid=nosuch   (missing) C:/Users/.../nosuch/out.txt     Path not found - C:\...
 ```
+
+`attrib` says *Invalid switch* because the unconverted argument still starts
+with `/`, which it reads as an option introducer — a second, unrelated way for
+the same non-conversion to surface as something that looks like a usage error.
+
+**The mechanism is visible in `cygpath`, which does the same resolution out
+loud:**
+
+```
+$ cygpath -m /c/Users/.../afile/out.txt
+cygpath: error converting "/c/Users/.../afile/out.txt" - Not a directory
+```
+
+So the conversion is not skipping the path — it is **failing** on it, with
+ENOTDIR, because a middle component is not a directory. `cygpath` reports that
+failure; the implicit argv conversion swallows it and passes the original
+string through unchanged. Same operation, same error, one loud and one silent.
 
 **Why it costs time.** The native binary receives `/c/Users/...`, which is not a
 path in its namespace, so it answers truthfully that the thing does not exist —
