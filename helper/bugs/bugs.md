@@ -238,3 +238,43 @@ it is essentially always meant as the special parameter. Enforced by
 `helper/test/test_reserved_param_names.zsh`, which fails the build if any helper
 script reintroduces one; opt out for a genuinely-intended special parameter
 with a `reserved-param-ok` comment on the line.
+
+---
+
+## "Sources newer than the binary" is normal here, for exactly four files
+
+A freshness check of the usual shape —
+
+```zsh
+find Src -name '*.c' -newer build/bin/zsh.exe
+```
+
+— reports three or four files on a tree that was just built successfully:
+
+```
+Src/hist.c           content matches HEAD (mtime only)
+Src/subst.c          content matches HEAD (mtime only)
+Src/Zle/zle_move.c   content matches HEAD (mtime only)
+```
+
+Nothing is stale. Those are the **patch targets**, and `compile.sh` restores
+them to pristine *after* the build (`restore_zle_backup`, armed as an EXIT trap
+at line 238 and run at 966, after `Assembling portable runtime` at 389). The
+restore rewrites the files, so their mtime lands after the binary's by design.
+
+**Why it matters.** mtime is the obvious way to ask "was this binary built from
+this source", and it is the check the csv2 tree's `STALE BINARY` guard uses.
+On *this* repo that question needs asking differently, because the answer is a
+false positive on every successful build — and a guard that cries wolf on every
+run is one people learn to skip.
+
+**Ask about content, not timestamps:**
+
+```zsh
+git diff --quiet HEAD -- "$f"    # true when the file matches what was built
+```
+
+The four affected files are exactly `helper/patches/`' targets: `Src/hist.c`,
+`Src/subst.c`, `Src/Zle/zle.h`, `Src/Zle/zle_move.c`. Any other source turning
+up newer than the binary IS a real staleness signal and should be treated as
+one.
