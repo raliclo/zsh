@@ -241,6 +241,40 @@ with a `reserved-param-ok` comment on the line.
 
 ---
 
+## MSYS declines to convert a path when a middle component is a regular file
+
+The documented traps in this file are all "the argument was rewritten when it
+should not have been". This is the same family with the sign flipped: **the
+argument was NOT rewritten when it should have been**, and nothing said so.
+
+MSYS converts POSIX paths to Windows form when handing them to a native binary.
+It does that for a path through a directory, and for a path through a component
+that does not exist — but not for one through a regular **file**. Measured with
+`cmd.exe echo`, so no third-party tool is involved:
+
+```
+mid=realdir  (dir)     -> C:/Users/.../convprobe/realdir/out.txt     converted
+mid=afile    (file)    -> /c/Users/.../convprobe/afile/out.txt       NOT converted
+mid=nosuch   (missing) -> C:/Users/.../convprobe/nosuch/out.txt      converted
+```
+
+**Why it costs time.** The native binary receives `/c/Users/...`, which is not a
+path in its namespace, so it answers truthfully that the thing does not exist —
+and that answer is about the *string it was handed*, not about the file on disk,
+which is sitting right there. Every layer is behaving correctly and the
+conclusion is still wrong.
+
+It needs three things at once — an MSYS-linked shell, a native callee, and a
+middle component that happens to be a file — so it hides easily: in the case
+that found this, 1132 sibling invocations converted correctly and one did not.
+
+**Rule:** when a native binary reports a path as missing and the path is visibly
+there, print the argument as the callee received it before doubting the file
+system. `MSYS2_ARG_CONV_EXCL='*'` plus a `cygpath -m` path sidesteps the
+conversion entirely and is the fix when a call must be reliable.
+
+---
+
 ## "Sources newer than the binary" is normal here, for exactly four files
 
 A freshness check of the usual shape —
