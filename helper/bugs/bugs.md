@@ -1,4 +1,4 @@
-# Windows / WSL environment traps
+# Windows / WSL environment traps — index
 
 Findings that cost real debugging time on this port. They share a shape: the
 tooling does not fail, it returns **plausible wrong data**, so the mistake
@@ -6,327 +6,58 @@ surfaces far from its cause and the first conclusion drawn from it is wrong.
 
 Each entry records what was measured, not what was assumed.
 
----
+## Filed by cause, not by symptom
 
-## `wsl.exe` runs your arguments through the WSL login shell
+**A trap goes in the file for whatever *causes* it, never for the program it
+happens to surface on.** That rule was bought: the non-conversion in
+[bugs-msys.md](bugs-msys.md) was first written up citing `cmd.exe`, because
+`cmd.exe echo` was the probe used to see the argument. Filing it as a cmd
+problem would have been wrong in the way that matters — `attrib.exe` shows the
+identical behaviour and reports it as `Invalid switch`, and a Swift binary
+reports it as `does not exist`. One cause, three unrecognisable faces. Filed by
+symptom, the same finding would have been written three times and connected
+never.
 
-`wsl.exe -- ... '...'` loses `$var` even inside single quotes. Measured with
-`od -c` on what actually arrives:
+When a new entry is ambiguous, ask which layer you would have to change to fix
+it. That layer names the file.
 
-```
-send 'A$pB'  ->  receives  A        (1 byte -- $pB gone)
-send 'A_pB'  ->  receives  A_pB     (4 bytes -- intact)
-```
+| file | cause |
+|---|---|
+| [bugs-wsl.md](bugs-wsl.md) | `wsl.exe` itself — what it does to a command crossing into WSL |
+| [bugs-msys.md](bugs-msys.md) | the MSYS2 runtime — argv conversion, and path resolution in `msys-2.0.dll` |
+| [bugs-zsh.md](bugs-zsh.md) | zsh the language — deliberate behaviour a script can walk into |
+| [bugs-build.md](bugs-build.md) | this repo's own build — things that make a correct tree look wrong |
 
-**Corrected 2026-08-29.** This entry used to blame Git Bash for consuming the
-quotes, and the local shell for being the problem. Both were wrong, and the
-first is the kind of wrong that sends someone to change the wrong thing:
+## The entries
 
-- **The local shell is irrelevant.** The same call from the packaged zsh loses
-  exactly the same byte. Removing quotes is what every POSIX shell correctly
-  does with its own syntax; there is no Git Bash quirk here to escape.
-- **A shell runs on the far side even when you did not ask for one.**
-  `wsl.exe -- printf '%s' '[$HOME]'` — `printf` expands nothing and there is no
-  `sh -c` anywhere — answers `zsh:1: no matches found: [/home/lowei]`. So
-  `$HOME` was substituted and `[...]` was globbed. `wsl.exe -- sh -c 'printf %s
-  "\$SHELL"'` returns `/usr/bin/zsh`: the command is handed to the WSL **login
-  shell**, not exec'd.
+**[bugs-wsl.md](bugs-wsl.md)**
 
-**It is not only `$`.** Every metacharacter that shell has is live, and the
-dangerous case is the one that succeeds:
+- `wsl.exe` runs your arguments through the WSL login shell — `$var` and globs
+  are expanded a second time on the far side even when no shell was asked for.
+  `--exec` is the fix; it costs you the login environment, which is its own trap.
 
-```
-'/etc/hostn*me'        ->  /etc/hostname      # SILENTLY a different string
-'/nonexistent/zz*qq'   ->  zsh: no matches found   # loud, therefore harmless
-'$HOME'                ->  /home/lowei        # silently substituted
-'$UNDEFINED'           ->  (empty)            # silently emptied
-```
+**[bugs-msys.md](bugs-msys.md)**
 
-A glob that matches, and a variable that is set, both hand back a plausible
-wrong value at exit 0. A glob that matches nothing is the *safe* case, because
-it fails loudly.
+- `/mnt/...` paths are rewritten before `wsl.exe` sees them.
+- MSYS declines to convert a path when a middle component is a regular file —
+  the conversion *fails* with ENOTDIR and the argv path swallows the error.
+- `MSYS2_ARG_CONV_EXCL='*'` breaks `//F`, and the kill silently does not happen.
+- Bundled tools do not resolve `/c/...` when invoked from outside.
 
-**Why it is expensive.** The failure is a false negative, not an error:
+**[bugs-zsh.md](bugs-zsh.md)**
 
-```zsh
-p=/usr/local/swift/...; [ -x "$p" ]     # $p arrives empty
-[ -x "" ]                                # false -- "no toolchain"
-```
+- `local path` (and `path=`, `for path in`) silently empties `PATH`.
+- Modules do not load under `zsh -f` in the portable package.
 
-The toolchain was present the whole time. A wrong conclusion ("the
-environments are inconsistent") was drawn and chased before the argument
-transit was suspected.
+**[bugs-build.md](bugs-build.md)**
 
-**Fix — `--exec`, which skips that shell entirely.** Measured 2026-08-29:
+- "Sources newer than the binary" is normal here, for exactly four files.
+- An interrupted build leaves patched sources and live children.
 
-```
-                        wsl.exe --          wsl.exe --exec
-'A$pB'                  A                   A$pB
-'/etc/hostn*me'         /etc/hostname       /etc/hostn*me
-'[$HOME]'               zsh: no matches     [$HOME]
-```
+## The pattern worth carrying away
 
-This is better than escaping, because escaping requires knowing in advance
-every metacharacter the far-side shell has, and getting one wrong is silent.
-`--exec` removes the shell, so there is nothing to escape and an explicit
-`--exec zsh -lc '...'` still expands its own `$var` exactly once, as written.
-Pinned by `test_wsl_exec_preserves_argv` in
-`helper/test/test_windows_packaging.zsh`, asserted through a real `wsl.exe`
-call rather than by reading a script — the claim is about what crosses the
-boundary.
-
-**Fallback when the far-side shell is wanted — escape what it would eat:**
-
-```zsh
-wsl.exe -- zsh -lc 'p=/usr/bin; [ -x "\$p" ] && echo YES; echo "p=[\$p]"'
-# -> YES  p=[/usr/bin]
-```
-
-One level of `\$` is enough; `\\$` behaves identically. The same applies to
-`*`, `?` and `[...]` — escape them, or the far-side shell resolves them against
-*its* filesystem. Note what does NOT need escaping and why: `$(...)` is
-untouched here because the LOCAL shell already replaced it with its value
-before `wsl.exe` was called, so no metacharacter ever crosses. Passing the script as
-a **file** is steadier still, since it removes the guessing about how many
-layers are consuming characters — but see the next entry, because the obvious
-way to do that fails too.
-
----
-
-## `/mnt/...` paths are rewritten before `wsl.exe` sees them
-
-The natural fix for the above — put the script in a file and pass its path —
-runs straight into MSYS argument conversion:
-
-```
-wsl.exe -- zsh /mnt/c/Users/.../script.sh
-zsh: can't open input file:
-     C:/Users/lowei/scoop/apps/git/2.54.0/mnt/c/Users/.../script.sh
-```
-
-Git Bash rewrote `/mnt/c/...` by prepending its own MSYS root. Confirm the
-root it uses with `cygpath -m /`.
-
-**Fix — disable the conversion for this call:**
-
-```zsh
-MSYS2_ARG_CONV_EXCL='*' wsl.exe -- zsh /mnt/c/Users/.../script.sh
-```
-
-This is required for `wsl.exe` specifically, because the callee genuinely
-wants POSIX paths. Do **not** apply it blanketly to native Windows binaries:
-with conversion off, a Windows `zsh.exe` handed `/tmp/...` cannot open the
-file at all.
-
-Note these two traps compound. Escaping `$` avoids the first; passing a file
-avoids the first but triggers the second. A call that does both needs
-`MSYS2_ARG_CONV_EXCL` *and* correct quoting.
-
----
-
-## Bundled tools do not resolve `/c/...` when invoked from outside
-
-The packaged `stat.exe` (and every other bundled MSYS binary) fails on POSIX
-drive paths when launched directly from Git Bash, yet works from inside the
-packaged zsh:
-
-```
-from Git Bash:  ./build/bin/stat.exe -c%s /c/.../README
-                -> cannot stat: No such file or directory
-from zsh:       stat -c%s /c/.../README
-                -> 48231
-```
-
-It is the same binary, and it does import `msys-2.0.dll`, so it understands
-`/c/` in principle. The cause is that `build/bin/msys-2.0.dll`, run standalone
-without the rest of an MSYS2 install tree, resolves `/` relative to the
-calling process's cwd rather than a real filesystem root — the limitation
-already documented in `helper/test/test_windows_packaging.zsh`.
-
-**Rule:** use the bundled tools *through* the packaged zsh. If a call from
-Git Bash is unavoidable, pass `C:/...` form, which works.
-
----
-
-## `MSYS2_ARG_CONV_EXCL='*'` breaks `//F`, and the kill silently does not happen
-
-`taskkill //F //IM foo.exe` — the standard Git Bash spelling — failed inside
-the packaged zsh with `ERROR: Invalid argument/option - '//F'`, **and the
-target process stayed alive**. It was not a zsh defect: the cause was our own
-wrapper, which set the blanket exclusion.
-
-The two spellings are correct in *opposite* contexts, which is what made this
-expensive to chase — muscle memory from Git Bash is wrong here, and nothing
-said so. Measured (nonexistent image name, so nothing dies):
-
-| context | conversion | `//F //IM` | `/F /IM` | `-f -im` |
-|---|---|---|---|---|
-| Git Bash | on | ok | `Invalid argument 'F:/'` | ok |
-| `zsh -f` (no zshrc) | on | ok | `Invalid argument 'F:/'` | ok |
-| packaged zsh, old wrapper | **off** | `Invalid argument '//F'` | ok | ok |
-
-Single-slash `/F` is rewritten into the path `F:/` when conversion is on, which
-is exactly why the `//F` idiom exists. Turning conversion fully off with `'*'`
-protects `/F` but also suppresses MSYS's own `//x` → `/x` collapse, so `//F`
-arrives literally.
-
-End-to-end against a real process — the reason this rates an entry rather than
-a footnote:
-
-```
-//F //IM   rc=1  alive_after=1   *** SURVIVED ***
-/F  /IM    rc=0  alive_after=0   killed
--f  -im    rc=0  alive_after=0   killed
-```
-
-`taskkill` does report failure, but a caller that does not check the exit
-status reads "killed" from a command that killed nothing.
-
-**Fix — exclude the option prefixes, not everything** (`helper/compile.sh`):
-
-```zsh
-MSYS2_ARG_CONV_EXCL='/F;/FI;/IM;/P;/PID;/S;/T;/U' command taskkill.exe "$@"
-```
-
-Now `/F` is protected from conversion *and* `//F` still reaches the collapse,
-so **both spellings work**. The lists come from `taskkill /?` and `tasklist /?`
-verbatim; neither tool accepts a POSIX path, so scoping costs nothing. Note
-this does **not** generalize to `wsl.exe`, which genuinely receives POSIX paths
-and must keep `'*'`.
-
-`tasklist` had the same hole and was not wrapped at all (`/FI` became
-`<cwd>/FI`); it is wrapped now. Pinned by
-`test_taskkill_accepts_both_slash_forms` in
-`helper/test/test_windows_packaging.zsh`.
-
-**Portable spelling:** `taskkill -f -im name.exe` works in every context above,
-conversion on or off, so it needs no knowledge of which mode you are in.
-
----
-
-## `local path` (and `path=`, `for path in`) silently empties `PATH`
-
-Not Windows-specific — a zsh-language trap, identical on macOS/Linux — but it
-bit this port during the sh→zsh conversion and shares the same shape as the
-entries above: no error, just plausible wrong state that surfaces far away.
-
-`path` is tied to `PATH` as an array, so spelling it as an ordinary variable
-touches the real `PATH`. Measured on this build:
-
-```
-zsh -f -c 'f(){ local path; print in $#PATH }; print before $#PATH; f; print after $#PATH'
-before 1879
-in     0            # PATH emptied for the function's lifetime
-after  1879         # ...and restored on return
-
-zsh -f -c 'f(){ local path; ls / }; ls /; f'
-top:     ls FOUND
-in-func: ls NOT FOUND (rc=127)     # every PATH lookup fails inside f
-after:   ls FOUND
-```
-
-The self-healing is what makes it worse than a top-level `path=(...)`: the
-breakage vanishes the instant control leaves the function, so the failure is
-read as "the tool is missing" rather than "PATH was clobbered here." Same trap
-applies to `for path in ...` (each iteration assigns `path`) and to `watch`,
-`status`, `options`, `cdpath`, `manpath`, `fpath`, `argv`, `fignore`.
-
-**This is not a zsh defect and must not be patched** — the `path`/`PATH`
-tie-in is deliberate. The fix is at the usage level: never spell these as plain
-variables (`path`→`dir_path`, `watch`→`watch_list`). `module_path` is exempt —
-it is essentially always meant as the special parameter. Enforced by
-`helper/test/test_reserved_param_names.zsh`, which fails the build if any helper
-script reintroduces one; opt out for a genuinely-intended special parameter
-with a `reserved-param-ok` comment on the line.
-
----
-
-## MSYS declines to convert a path when a middle component is a regular file
-
-The documented traps in this file are all "the argument was rewritten when it
-should not have been". This is the same family with the sign flipped: **the
-argument was NOT rewritten when it should have been**, and nothing said so.
-
-MSYS converts POSIX paths to Windows form when handing them to a native binary.
-It does that for a path through a directory, and for a path through a component
-that does not exist — but not for one through a regular **file**. Measured with
-two unrelated native programs, so neither of them is the cause:
-
-```
-                       cmd.exe echo                    attrib.exe
-mid=realdir  (dir)     C:/Users/.../realdir/out.txt    File not found - C:/...
-mid=afile    (file)    /c/Users/.../afile/out.txt      Invalid switch - /c/...
-mid=nosuch   (missing) C:/Users/.../nosuch/out.txt     Path not found - C:\...
-```
-
-`attrib` says *Invalid switch* because the unconverted argument still starts
-with `/`, which it reads as an option introducer — a second, unrelated way for
-the same non-conversion to surface as something that looks like a usage error.
-
-**The mechanism is visible in `cygpath`, which does the same resolution out
-loud:**
-
-```
-$ cygpath -m /c/Users/.../afile/out.txt
-cygpath: error converting "/c/Users/.../afile/out.txt" - Not a directory
-```
-
-So the conversion is not skipping the path — it is **failing** on it, with
-ENOTDIR, because a middle component is not a directory. `cygpath` reports that
-failure; the implicit argv conversion swallows it and passes the original
-string through unchanged. Same operation, same error, one loud and one silent.
-
-**Why it costs time.** The native binary receives `/c/Users/...`, which is not a
-path in its namespace, so it answers truthfully that the thing does not exist —
-and that answer is about the *string it was handed*, not about the file on disk,
-which is sitting right there. Every layer is behaving correctly and the
-conclusion is still wrong.
-
-It needs three things at once — an MSYS-linked shell, a native callee, and a
-middle component that happens to be a file — so it hides easily: in the case
-that found this, 1132 sibling invocations converted correctly and one did not.
-
-**Rule:** when a native binary reports a path as missing and the path is visibly
-there, print the argument as the callee received it before doubting the file
-system. `MSYS2_ARG_CONV_EXCL='*'` plus a `cygpath -m` path sidesteps the
-conversion entirely and is the fix when a call must be reliable.
-
----
-
-## "Sources newer than the binary" is normal here, for exactly four files
-
-A freshness check of the usual shape —
-
-```zsh
-find Src -name '*.c' -newer build/bin/zsh.exe
-```
-
-— reports three or four files on a tree that was just built successfully:
-
-```
-Src/hist.c           content matches HEAD (mtime only)
-Src/subst.c          content matches HEAD (mtime only)
-Src/Zle/zle_move.c   content matches HEAD (mtime only)
-```
-
-Nothing is stale. Those are the **patch targets**, and `compile.sh` restores
-them to pristine *after* the build (`restore_zle_backup`, armed as an EXIT trap
-at line 238 and run at 966, after `Assembling portable runtime` at 389). The
-restore rewrites the files, so their mtime lands after the binary's by design.
-
-**Why it matters.** mtime is the obvious way to ask "was this binary built from
-this source", and it is the check the csv2 tree's `STALE BINARY` guard uses.
-On *this* repo that question needs asking differently, because the answer is a
-false positive on every successful build — and a guard that cries wolf on every
-run is one people learn to skip.
-
-**Ask about content, not timestamps:**
-
-```zsh
-git diff --quiet HEAD -- "$f"    # true when the file matches what was built
-```
-
-The four affected files are exactly `helper/patches/`' targets: `Src/hist.c`,
-`Src/subst.c`, `Src/Zle/zle.h`, `Src/Zle/zle_move.c`. Any other source turning
-up newer than the binary IS a real staleness signal and should be treated as
-one.
+Three of these are the same operation seen from different sides: an argument
+rewritten when it should not have been, not rewritten when it should have been,
+and rewritten *twice*. The common defence is not a rule about any one of them —
+it is to **print what the callee actually received** before concluding anything
+about the file system, the toolchain, or the other machine.
