@@ -48,6 +48,10 @@ it. That layer names the file.
 
 - `local path` (and `path=`, `for path in`) silently empties `PATH`.
 - Modules do not load under `zsh -f` in the portable package.
+- Nothing in `$0`'s family tells you whether you were sourced — `$0`, `${0:A}`,
+  `%x` and `%N` all agree in both cases. `$ZSH_EVAL_CONTEXT` is the answer.
+- `source` without arguments inherits the caller's positional parameters, so a
+  library sees the caller's `--help`. `source lib --` does *not* fix it.
 
 **[bugs-build.md](bugs-build.md)**
 
