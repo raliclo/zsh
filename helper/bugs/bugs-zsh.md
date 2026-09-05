@@ -141,12 +141,19 @@ the handler runs twice: once for the signal, once for the exit that follows.
 That is fine for a handler that only removes files —
 
 ```zsh
-remove_temps() { rm -f "${TMPDIR:-/tmp}"/.mytool.* }
+remove_temps() { rm -f "${TMPDIR:-/tmp}"/.mytool.*(N) }
 trap remove_temps EXIT INT TERM HUP
 ```
 
 — because `rm -f` is idempotent (verified: handler ran twice, the file was
-removed, no error). It is *not* fine for a handler that does real work. A
+removed, no error). **The `(N)` is not decoration**: without it zsh's `nomatch`
+makes the usual case — nothing to clean — an error, `zsh: no matches found`,
+rc=1, with `rm` never reached. A handler meant to be safe to run twice then
+fails on the *first* run against a clean tree. `rm -f` does not cover this,
+because the failure happens during expansion. See
+[example.md](../example.md) for the whole pattern and the rest of its edges.
+
+It is *not* fine for a handler that does real work. A
 cleanup that rebuilds something, restores a checkout, or re-runs a compile will
 do it twice, and trapping `INT` then means **Ctrl-C starts two multi-minute
 builds**.
