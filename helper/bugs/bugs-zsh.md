@@ -65,3 +65,56 @@ independent cases red for this reason alone.
 `-f`. Note `MODULE_PATH` in the environment does not help — `module_path` is a
 shell parameter, not inherited from the environment, and it is lost across
 `exec`; only `source` preserves it.
+
+---
+
+## Nothing in `$0`'s family tells you whether you were sourced
+
+The natural first attempt is to compare `$0` (or `${0:A}`) against `${(%):-%x}`
+and branch on the difference. It never fires. Measured — all four expansions,
+both ways of arriving:
+
+| expansion | run directly | sourced |
+|---|---|---|
+| `$0` | `./lib.zsh` | `./lib.zsh` |
+| `${0:A}` | `/abs/.../lib.zsh` | `/abs/.../lib.zsh` |
+| `${(%):-%x}` | `./lib.zsh` | `./lib.zsh` |
+| `${(%):-%N}` | `./lib.zsh` | `./lib.zsh` |
+
+Not a defect: two correct definitions simply agree here. `FUNCTION_ARGZERO`
+says "when executing a shell function **or sourcing a script**, set `$0` to the
+name of the function/script", and `%x` is by definition the file whose code is
+running. In a sourced file that is the same file, so the comparison has nothing
+to compare.
+
+**`$ZSH_EVAL_CONTEXT` is the discriminator**, and it is a documented read-only
+parameter for exactly this question:
+
+```
+run directly -> toplevel
+sourced      -> toplevel:file
+```
+
+## `source` without arguments inherits the caller's positional parameters
+
+Documented under `.`: *"if no arguments are given, the positional parameters
+remain those of the calling context, and no restoring is done."*
+
+So a caller started as `./tool.zsh --help` hands `$1=--help` to every library it
+sources. Harmless while the library only defines functions; a library that
+parses `$@` at top level will act on the caller's flags.
+
+**The obvious remedy does not work.** `source lib.zsh --` does not clear them —
+`--` is taken as a literal argument, so the library sees `$#=1 $1=--`. Measured,
+after it was written into this entry as advice and had to be removed.
+
+**What does work** — either gives the library `$#=0` and leaves the caller's
+parameters intact afterwards:
+
+```zsh
+() { source ./lib.zsh }                 # anonymous function: its own (empty) $@
+
+typeset -a saved; saved=("$@"); set --  # or save, clear, restore
+source ./lib.zsh
+set -- "${saved[@]}"
+```
