@@ -118,3 +118,50 @@ typeset -a saved; saved=("$@"); set --  # or save, clear, restore
 source ./lib.zsh
 set -- "${saved[@]}"
 ```
+
+---
+
+## `trap ... EXIT` does not run when the shell is killed by a signal
+
+A cleanup registered only on `EXIT` leaks its temp files whenever the script is
+terminated rather than allowed to finish. Measured, with the script signalling
+**itself** so no cross-process PID question is involved:
+
+| trap spec | on SIGTERM | on SIGINT |
+|---|---|---|
+| `EXIT` | does not run | does not run |
+| `EXIT INT TERM` | runs — **twice** | runs — **twice** |
+
+Not a defect, and not zsh-specific: `EXIT` means *normal termination*, and a
+shell killed by an uncaught signal never reaches that path — it dies of the
+signal. Every POSIX shell behaves this way. Name the signals you actually want.
+
+**The part that is easy to miss is the second column.** With `EXIT INT TERM`,
+the handler runs twice: once for the signal, once for the exit that follows.
+That is fine for a handler that only removes files —
+
+```zsh
+remove_temps() { rm -f "${TMPDIR:-/tmp}"/.mytool.* }
+trap remove_temps EXIT INT TERM HUP
+```
+
+— because `rm -f` is idempotent (verified: handler ran twice, the file was
+removed, no error). It is *not* fine for a handler that does real work. A
+cleanup that rebuilds something, restores a checkout, or re-runs a compile will
+do it twice, and trapping `INT` then means **Ctrl-C starts two multi-minute
+builds**.
+
+If the handler cannot be made idempotent, disarm the EXIT trap inside the
+signal handler so it runs once:
+
+```zsh
+trap 'cleanup; trap - EXIT; exit 143' INT TERM
+trap cleanup EXIT
+```
+
+Measured: one run instead of two.
+
+**The rule worth carrying:** a trap handler should be idempotent and instant.
+If the thing you want on interrupt is expensive, that is a sign the expensive
+part belongs in the normal flow and only the file removal belongs in the trap —
+which is also how you get to keep `INT` in the list.

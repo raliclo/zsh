@@ -52,6 +52,9 @@ it. That layer names the file.
   `%x` and `%N` all agree in both cases. `$ZSH_EVAL_CONTEXT` is the answer.
 - `source` without arguments inherits the caller's positional parameters, so a
   library sees the caller's `--help`. `source lib --` does *not* fix it.
+- `trap ... EXIT` does not run when the shell is killed by a signal — and
+  adding `INT TERM` makes the handler run **twice**, which matters if it does
+  real work.
 
 **[bugs-build.md](bugs-build.md)**
 
