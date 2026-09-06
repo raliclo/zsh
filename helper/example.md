@@ -111,6 +111,29 @@ free, and there is no pattern to match nothing.
 
 ---
 
+## 6. Brace every parameter that is followed by a colon
+
+The same page's other habit worth forming, because it bites the same way — no
+error, a different string:
+
+```zsh
+root=/Some/Path
+"$root:libcrux"      # zsh -> /some/pathibcrux     (lowercased, `l` eaten)
+"${root}:libcrux"    # zsh -> /Some/Path:libcrux   (correct, and same in bash)
+```
+
+A colon straight after an **unbraced** parameter starts a history modifier.
+`zsh -n` passes the broken form, so the syntax check will not save you. Of 19
+letters tested, twelve change the value and eleven do it silently — `:h` gives
+the dirname, `:t` the basename, `:e` throws the path away and keeps the
+extension. Only `:s` says anything.
+
+Braces end the parameter name, so the colon is just a colon. This is checked
+by `helper/test/test_reserved_param_names.zsh`, which flags **any** letter
+after `$name:` — a name beginning with a currently-harmless letter becomes
+wrong the day it is renamed. Digits, `$`, `/` and `${...}` are all left alone,
+so `"$host:8080"`, `"$proto://x"` and `"$a:$b"` do not trip it.
+
 ## Verifying it yourself
 
 The claims above are all reproducible in a few seconds. The one worth running
