@@ -74,11 +74,29 @@ declare_bare="${pre}(local|typeset|declare|readonly|integer|float|export)${flags
 for_loop="${pre}for[[:space:]]##${n}${sfx}"
 read_into="${pre}read${flags}[[:space:]]##${n}${sfx}"
 
+# A colon straight after an UNBRACED parameter is a history modifier, not a
+# literal colon. `"$root:libcrux"` expands to the lowercased $root with the `l`
+# eaten and `ibcrux` appended -- and `zsh -n` passes it, so the usual syntax
+# check is no help. Measured: of 19 letters, twelve change the value and eleven
+# do so silently; only `:s` says anything. Bracing ends the parameter name and
+# disarms it, which is why the fix is free.
+#
+# Any letter is flagged, not just today's dangerous ones: a name beginning with
+# a currently-inert letter (`:openssh-portable` is fine) becomes wrong the day
+# it is renamed, and "safe because of its first letter" is not a property worth
+# depending on. Braces, digits, `$`, `/` and `:` itself are all left alone --
+# `"${p}:x"`, `"$host:8080"`, `"$proto://x"`, `"$a:$b"` do not match.
+# `[$]` and not `\$`: a backslash escape does not survive the `$~var` expansion
+# that turns this string into a pattern, so the `\$` form silently matches
+# nothing and the check passes everything. Verified both ways before trusting
+# it -- a lint that cannot fail is worse than no lint.
+colon_modifier='*[$][A-Za-z_][A-Za-z0-9_]#:[A-Za-z]*'
+
 files=($repo/helper/**/*.sh(N) $repo/helper/**/*.zsh(N))
 files=(${files:#*/helper/patches/*})              # patches carry upstream code
 files=(${files:#*/test_reserved_param_names.zsh}) # this file names them on purpose
 
-typeset -a hits
+typeset -a hits colon_hits
 for f in $files; do
     typeset -i lineno=0
     while IFS= read -r line; do
@@ -89,6 +107,8 @@ for f in $files; do
         if [[ $line == $~assign || $line == $~declare_bare ||
               $line == $~for_loop || $line == $~read_into ]]; then
             hits+="${f#$repo/}:$lineno: ${line##[[:space:]]#}"
+        elif [[ $line == $~colon_modifier ]]; then
+            colon_hits+="${f#$repo/}:$lineno: ${line##[[:space:]]#}"
         fi
     done < $f
 done
@@ -102,5 +122,15 @@ if (( ${#hits} )); then
     exit 1
 fi
 
-printf 'scanned %d helper script(s); no reserved-name variable misuse\n' ${#files}
+if (( ${#colon_hits} )); then
+    printf '%s\n' "a colon after an unbraced parameter is a history modifier, not a literal:" >&2
+    printf '  %s\n' "${colon_hits[@]}" >&2
+    printf '%s\n' '-> brace the parameter: "$root:libcrux" -> "${root}:libcrux".' >&2
+    printf '%s\n' '   Unbraced, zsh reads :l as the lowercase modifier and produces the' >&2
+    printf '%s\n' '   lowercased value with the l eaten -- silently, and zsh -n passes it.' >&2
+    printf '%s\n' "   Add 'reserved-param-ok' on the line if the modifier is intended." >&2
+    exit 1
+fi
+
+printf 'scanned %d helper script(s); no reserved-name misuse, no unbraced :modifier\n' ${#files}
 exit 0
