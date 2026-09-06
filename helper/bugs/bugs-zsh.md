@@ -68,6 +68,55 @@ shell parameter, not inherited from the environment, and it is lost across
 
 ---
 
+## `"$var:word"` — a colon after an unbraced parameter is a modifier
+
+Building a path by concatenation is the ordinary thing to write, and in zsh it
+can silently produce a different string:
+
+```zsh
+root=/Some/Path
+printf '%s\n' "$root:libcrux"     # zsh  -> /some/pathibcrux
+                                  # bash -> /Some/Path:libcrux
+```
+
+`:l` is the *lowercase* history modifier. zsh applies it to `$root`, consumes
+the `l`, and leaves `ibcrux` behind: the case is destroyed and a character is
+gone. No error, and **`zsh -n` passes it** — verified, so the usual syntax check
+is not a defence.
+
+**Braces end the parameter name and disarm it completely:**
+
+```zsh
+"${root}:libcrux"                 # -> /Some/Path:libcrux, in both shells
+```
+
+**How much of the alphabet is live.** Of the 19 letters tested after `:`, twelve
+change the value and eleven of those do it silently:
+
+| after `:` | effect on `/Some/Path` |
+|---|---|
+| `a` `A` `c` `q` `Q` `r` | silently rewritten or absorbed |
+| `h` | dirname — `/Some` |
+| `t` | basename — `Path` |
+| `e` | extension only — the path is gone |
+| `l` `u` | lowercased / uppercased |
+| `s` | the one that speaks: `no previous substitution` |
+| `g` `m` `n` `o` `p` `x` `z` | left literal — safe |
+
+So a list of names is a lottery. `:openssh-portable` is fine, `:libcrux` is
+not, and nothing distinguishes them at review time. A report of this said one
+item errored while another was silently mangled — on this build **neither
+errored**: `:o` is inert and `:l` is silent, so the "at least one blows up"
+safety net did not exist here at all. Do not rely on one item of a list failing
+loudly to protect the rest.
+
+Same family as `path=` and `watch=` above: **punctuation or a name that means
+something in zsh and nothing in bash**, failing without a diagnostic. The
+defence is the same — spell it so the special meaning cannot arise, here by
+bracing every parameter that is followed by a colon.
+
+---
+
 ## Nothing in `$0`'s family tells you whether you were sourced
 
 The natural first attempt is to compare `$0` (or `${0:A}`) against `${(%):-%x}`
