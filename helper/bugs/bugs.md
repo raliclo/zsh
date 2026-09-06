@@ -47,6 +47,9 @@ it. That layer names the file.
 **[bugs-zsh.md](bugs-zsh.md)**
 
 - `local path` (and `path=`, `for path in`) silently empties `PATH`.
+- `"$var:word"` — a colon after an *unbraced* parameter is a history modifier.
+  `"$root:libcrux"` becomes the lowercased root plus `ibcrux`, and `zsh -n`
+  passes it. Twelve letters of the alphabet do this; eleven do it silently.
 - Modules do not load under `zsh -f` in the portable package.
 - Nothing in `$0`'s family tells you whether you were sourced — `$0`, `${0:A}`,
   `%x` and `%N` all agree in both cases. `$ZSH_EVAL_CONTEXT` is the answer.
