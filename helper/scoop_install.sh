@@ -12,7 +12,10 @@
 #   1. Packs build/bin/*  ->  build/package/zsh.tar.zst
 #   2. Regenerates bucket/zsh.json with the version and sha256 hash
 #      (GitHub Release asset URL)
-#   3. Optionally uploads zsh.tar.zst to one stable GitHub Release tag
+#   3. Optionally publishes zsh.tar.zst to one stable GitHub Release tag, by
+#      handing off to helper/publish.zsh -- which also reads the asset back
+#      and re-downloads it to compare sha256. Run that script directly to
+#      publish an archive without rebuilding or reinstalling anything.
 #
 # zstd rather than zip, since 2026-08-29. Both ends were verified before the
 # switch rather than assumed: Windows' own bsdtar 3.8.4 is built with
@@ -339,37 +342,31 @@ mkdir -p "$BUILD/local-manifest"
 sed "s#\"url\": \".*\"#\"url\": \"file:///$REPO_WIN/build/package/$ARCHIVE_NAME\"#" \
     "$BUCKET/zsh.json" > "$BUILD/local-manifest/zsh.json"
 
+# --- 2b. Publish, via helper/publish.zsh -------------------------------------
+# The gh calls used to be inline here. Extracted on 2026-10-08 so that
+# re-publishing an archive that already exists does not require running the
+# whole package-and-install flow -- and because a hand-rolled `gh release
+# upload` is exactly where `--clobber` and the superseded-asset cleanup get
+# forgotten. publish.zsh also verifies the upload by reading the asset list
+# back and re-downloading to compare sha256, which this block never did.
+#
+# Run with the zsh we just built, falling back to whatever is on PATH: this
+# step always follows a successful build, so build/bin is the honest choice --
+# it publishes using the product rather than some other zsh.
 if [ -n "$UPLOAD_RELEASE" ]; then
-    command -v gh >/dev/null 2>&1 || {
-        echo "error: gh not found; install GitHub CLI or rerun without --upload-release/--release" >&2
-        exit 1
-    }
-    COMMIT=$(git -C "$REPO" rev-parse HEAD)
-    RELEASE_NOTES="Portable zsh build
-
-Version: $VERSION
-Commit: $COMMIT
-Asset: $ARCHIVE_NAME
-"
-    echo "==> Uploading $ARCHIVE to GitHub Release $RELEASE_TAG ($GITHUB_REPO)..."
-    if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPO" >/dev/null 2>&1; then
-        gh release edit "$RELEASE_TAG" \
-            --repo "$GITHUB_REPO" \
-            --title "zsh portable" \
-            --notes "$RELEASE_NOTES"
-        gh release upload "$RELEASE_TAG" "$ARCHIVE" --repo "$GITHUB_REPO" --clobber
-        # The zip this replaced would otherwise stay on the release forever,
-        # downloadable and pinned by no manifest -- a stale artifact that looks
-        # current. Removing it is not fatal if it is already gone.
-        gh release delete-asset "$RELEASE_TAG" zsh.zip --repo "$GITHUB_REPO" --yes 2>/dev/null \
-            && echo "==> Removed the superseded zsh.zip asset" || :
+    if [ -x "$BUILD/bin/zsh.exe" ]; then
+        PUBLISH_ZSH="$BUILD/bin/zsh.exe"
+    elif command -v zsh >/dev/null 2>&1; then
+        PUBLISH_ZSH=$(command -v zsh)
     else
-        gh release create "$RELEASE_TAG" "$ARCHIVE" \
-            --repo "$GITHUB_REPO" \
-            --target "$COMMIT" \
-            --title "zsh portable" \
-            --notes "$RELEASE_NOTES"
+        echo "error: no zsh found to run helper/publish.zsh" >&2
+        exit 1
     fi
+    "$PUBLISH_ZSH" "$REPO/helper/publish.zsh" \
+        --archive "$ARCHIVE" \
+        --version "$VERSION" \
+        --tag "$RELEASE_TAG" \
+        --repo "$GITHUB_REPO" || exit 1
 fi
 
 if [ -n "$PACKAGE_ONLY" ]; then
