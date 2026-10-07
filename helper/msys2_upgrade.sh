@@ -118,8 +118,9 @@ EOF_UPGRADE
 }
 
 run_upgrade_script() {
-    if command -v cmd.exe >/dev/null 2>&1; then
-        MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c \
+    native_cmd=$(to_msys_path "${COMSPEC:-${ComSpec:-${SYSTEMROOT:-${SystemRoot:-C:/Windows}}/System32/cmd.exe}}")
+    if [ -x "$native_cmd" ]; then
+        MSYS2_ARG_CONV_EXCL='*' "$native_cmd" /d /c \
             "$(to_windows_path "$MSYS2_BASH")" -l "$(to_windows_path "$1")"
     else
         "$MSYS2_BASH" -l "$1"
