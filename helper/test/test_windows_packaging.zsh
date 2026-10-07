@@ -1083,6 +1083,49 @@ test_scoop_install_verifies_the_install() {
     fi
 }
 
+test_scoop_install_prompts_to_commit_the_manifest() {
+    local installer=$TEST_REPO_ROOT/helper/scoop_install.sh
+    if [[ -z $TEST_REPO_ROOT || ! -f $installer ]]; then
+        fail_test "scoop_install.sh prompts to commit the manifest" "missing installer"
+        return
+    fi
+    # Step 2 rewrites bucket/zsh.json after the build, so it is always left
+    # uncommitted; the Release then holds only the new asset, so the previous
+    # hash in the committed manifest matches nothing and a fresh install fails
+    # its hash check. This happened twice before the reminder existed, and the
+    # only thing that caught it was a manual comparison after the fact.
+    #
+    # Comments are stripped before matching. The publish.zsh refactor already
+    # produced a test that passed on prose in an explanatory comment, with zero
+    # real occurrences in the code -- so the greps here see code only.
+    local -a missing=()
+    code() { grep -vE '^[[:space:]]*#' "$1"; }
+    # `diff HEAD`, not a bare `diff`: measured, a bare one returns 0 once the
+    # file is staged, the one state where the reminder is still needed.
+    code $installer | grep -q 'diff --quiet HEAD -- bucket/zsh.json' ||
+        missing+=("detects-uncommitted-incl-staged")
+    code $installer | grep -q 'rev-parse --git-dir' ||
+        missing+=("guards-non-repo")
+    code $installer | grep -q 'ACTION NEEDED' ||
+        missing+=("prompts")
+    code $installer | grep -q 'add bucket/zsh.json' ||
+        missing+=("shows-the-command")
+    # The branch is read, never spelled: a pasted command naming the wrong
+    # branch is worse than no hint at all.
+    code $installer | grep -q 'rev-parse --abbrev-ref HEAD' ||
+        missing+=("reads-the-branch")
+    # It must stay a prompt. A build-and-install script that commits by itself
+    # would land on top of whatever else is in progress.
+    code $installer | grep -qE 'git -C "\$REPO" (commit|add) ' &&
+        missing+=("commits-by-itself")
+    if (( ${#missing} == 0 )); then
+        pass_test "scoop_install.sh prompts to commit the regenerated manifest"
+    else
+        fail_test "scoop_install.sh prompts to commit the regenerated manifest" \
+            "missing: ${missing[*]}"
+    fi
+}
+
 test_scoop_install_uses_github_release_assets() {
     local installer=$TEST_REPO_ROOT/helper/scoop_install.sh
     local manifest=$TEST_REPO_ROOT/bucket/zsh.json
@@ -1162,6 +1205,8 @@ test_msys2_tmp_startup
 test_compile_runs_msys2_upgrade_helper
 test_scoop_install_uses_github_release_assets
 test_scoop_install_verifies_the_install
+
+test_scoop_install_prompts_to_commit_the_manifest
 
 print
 print "Results: $pass passed, $fail failed, $skip skipped"
