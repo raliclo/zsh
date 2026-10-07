@@ -28,6 +28,13 @@
 #        - extracts to  ~/scoop/apps/zsh/<version>\   (+ 'current' junction)
 #        - creates the shim  ~/scoop/shims/zsh        (from zsh-loader.exe)
 #        - uses the packaged .zshenv bootstrap so zsh finds dynamic modules
+#   5. Prints the commands to commit bucket/zsh.json, if step 2 left it
+#      uncommitted. It does not commit by itself -- see step 5 in the body.
+#
+# 中文:步驟 2 在建置「之後」才重寫 bucket/zsh.json,所以那份 manifest 會留在
+# 工作目錄裡未提交。不提交的話,bucket 仍指向上一版的 hash,而 Release 上只有
+# 一個 asset,舊 hash 已經對不到任何東西 -- 全新的 scoop install 會在 hash 檢查
+# 失敗。步驟 5 只負責提醒,提交與否由人決定。
 #
 # --package-only stops after step 2: it refreshes the archive and the manifest
 # hash (which have to be regenerated together, since the manifest pins the
@@ -431,3 +438,43 @@ fi
 run_shim_version "$SHIM"
 echo "==> App dir: $SCOOP_HOME/apps/zsh/current"
 echo "==> zsh.cmd bootstraps module_path for dynamic modules; run: zsh"
+
+# --- 5. Remind that the regenerated manifest is not committed ------------------
+# Step 2 rewrites bucket/zsh.json *after* the build, so the version it writes
+# names a commit that already exists -- the manifest itself lands in the working
+# tree, unstaged. Left there, the bucket keeps serving the PREVIOUS release's
+# version/hash pair, and because the Release holds only one asset the old hash
+# now matches nothing on it: a fresh `scoop install zsh` fails its hash check.
+#
+# Prompting rather than committing on its own is deliberate. A build-and-install
+# script that makes commits is a different kind of tool, and `--release` is run
+# often enough mid-work that an automatic commit would land on top of whatever
+# else is in progress. Silence is the only thing that was wrong here.
+#
+# `diff HEAD`, not a bare `diff`: measured, a bare `git diff --quiet` returns 0
+# once the file is staged, which is the one state where the reminder is still
+# needed -- staged is not committed, and the bucket reads from a commit. The
+# rev-parse guard keeps a non-repo checkout from printing a bogus prompt (the
+# diff alone exits nonzero there, which would read as "you forgot to commit").
+if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+    :    # not a git checkout -- nothing to commit to
+elif git -C "$REPO" diff --quiet HEAD -- bucket/zsh.json 2>/dev/null; then
+    :    # already matches HEAD -- nothing to say
+else
+    echo ""
+    echo "==> ACTION NEEDED: bucket/zsh.json was regenerated and is NOT committed."
+    echo "    Until it is, the bucket serves the previous release's hash, which is"
+    echo "    no longer on the Release -- a fresh 'scoop install zsh' would fail."
+    echo ""
+    # Read the branch instead of hardcoding develop-win: a printed command that
+    # names the wrong branch is worse than no hint, because it gets pasted.
+    MANIFEST_BRANCH=$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    [ -n "$MANIFEST_BRANCH" ] && [ "$MANIFEST_BRANCH" != "HEAD" ] || MANIFEST_BRANCH=develop-win
+    echo "      git -C '$REPO' add bucket/zsh.json"
+    echo "      git -C '$REPO' commit -m 'Record the manifest version and hash actually published'"
+    echo "      git -C '$REPO' push ralic $MANIFEST_BRANCH"
+    echo ""
+    echo "    Then re-sync the bucket so the two agree:"
+    echo "      git -C '$SCOOP_HOME/buckets/zsh' fetch origin"
+    echo "      git -C '$SCOOP_HOME/buckets/zsh' reset --hard origin/$MANIFEST_BRANCH"
+fi
