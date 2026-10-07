@@ -603,7 +603,12 @@ else
     # rewriting the '/c' switch into a path on the way to cmd.
     _msys_bash_win=$(cygpath -w "$MSYS2_BASH" 2>/dev/null || to_windows_path "$MSYS2_BASH")
     _msys_script_win=$(to_windows_path "$_msys_script_file")
-    MSYS2_ARG_CONV_EXCL='*' cmd /c "$_msys_bash_win" -l "$_msys_script_win"
+    _native_cmd=$(to_msys_path "${COMSPEC:-${ComSpec:-${SYSTEMROOT:-${SystemRoot:-C:/Windows}}/System32/cmd.exe}}")
+    if [ ! -x "$_native_cmd" ]; then
+        echo "error: Windows cmd.exe not found: $_native_cmd" >&2
+        exit 1
+    fi
+    MSYS2_ARG_CONV_EXCL='*' "$_native_cmd" /d /c "$_msys_bash_win" -l "$_msys_script_win"
 fi
 
 # --- Portable launcher + zsh bootstrap --------------------------------------
