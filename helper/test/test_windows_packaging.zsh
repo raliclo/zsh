@@ -1094,14 +1094,29 @@ test_scoop_install_uses_github_release_assets() {
     # literally: the format moved from .zip to .tar.zst on 2026-08-29, and a
     # hardcoded name here fails the moment it moves again while saying nothing
     # about whether the Release flow is intact, which is what this test is for.
+    #
+    # The gh calls moved to helper/publish.zsh on 2026-10-08, so they are
+    # asserted THERE. The move is also why `code` strips comments first: with
+    # the publishing gone from the installer, this test still passed, because
+    # the comment left behind explaining the move contains the words
+    # `gh release` and `--clobber`. It was green on prose while the mechanism
+    # it checks had moved out of the file. Grep the code, not the file.
+    local publisher=$TEST_REPO_ROOT/helper/publish.zsh
+    if [[ ! -f $publisher ]]; then
+        fail_test "scoop install flow uses GitHub Release assets" "missing helper/publish.zsh"
+        return
+    fi
+    code() { grep -vE '^[[:space:]]*#' "$1"; }
     if grep -q 'build/release' $installer $manifest 2>/dev/null ||
        grep -q 'raw\.githubusercontent.*zsh\.\(zip\|tar\)' $installer $manifest 2>/dev/null; then
         fail_test "scoop install flow uses GitHub Release assets" "found old branch/release-folder artifact reference"
-    elif grep -q 'gh release' $installer &&
+    elif code $publisher | grep -q 'gh release' &&
+         code $publisher | grep -q -- '--clobber' &&
+         code $publisher | grep -q 'delete-asset' &&
+         code $installer | grep -q 'helper/publish.zsh' &&
          grep -q '^ARCHIVE_NAME=' $installer &&
          grep -q 'build/package/\$ARCHIVE_NAME' $installer &&
          grep -q 'ZSH_RELEASE_TAG:-zsh-portable' $installer &&
-         grep -q -- '--clobber' $installer &&
          grep -q '/releases/download/' $manifest; then
         pass_test "scoop install flow uses GitHub Release assets"
     else
