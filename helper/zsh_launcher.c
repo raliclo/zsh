@@ -378,6 +378,21 @@ static void resolve_final_path(wchar_t *path, size_t cap) {
     if (wcslen(p) < cap) wcscpy(path, p);
 }
 
+/* Ctrl-C and Ctrl-Break reach every process on the console, this launcher
+ * included. Without a handler, Windows' default ended the launcher at once
+ * (exit 0xC000013A) while zsh, which treats Ctrl-C as SIGINT and keeps going,
+ * lived on. The caller -- PowerShell, cmd -- saw its child exit, took the
+ * console back, and then it and the orphaned zsh both read the keyboard:
+ * keystrokes were split between them, typing came out scrambled, and
+ * terminal replies meant for zsh landed in the caller as text. Seen
+ * 2026-10-19. Report them handled and keep waiting; zsh decides what an
+ * interrupt means. A handler routine, not SetConsoleCtrlHandler(NULL, TRUE):
+ * that "ignore" flag is inherited, so zsh would never see Ctrl-C at all.
+ * Close, logoff and shutdown still take the default path. */
+static BOOL WINAPI ignore_interrupt(DWORD type) {
+    return type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT;
+}
+
 int main(void) {
     wchar_t exePath[MAX_PATH];
     if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) die(L"GetModuleFileNameW failed");
@@ -569,6 +584,9 @@ int main(void) {
     if (!ok) {
         fwprintf(stderr, L"zsh-launcher: failed to launch %ls (error %lu)\n", zshExe, GetLastError());
     } else {
+        /* Installed only now, so a failed launch above still dies on Ctrl-C
+         * like any program would. */
+        SetConsoleCtrlHandler(ignore_interrupt, TRUE);
         WaitForSingleObject(pi.hProcess, INFINITE);
         GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hProcess);
