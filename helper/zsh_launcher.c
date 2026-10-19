@@ -90,7 +90,9 @@ static wchar_t *trim_outer_raw_quotes(const wchar_t *raw) {
     return copy;
 }
 
-static wchar_t *raw_command_arg(void) {
+/* The raw command-line text after the -c token -- the script AND every
+ * operand after it -- or NULL. Points into GetCommandLineW(), not a copy. */
+static const wchar_t *raw_command_tail(void) {
     wchar_t *p = skip_raw_argv0(GetCommandLineW());
     while (*p) {
         wchar_t *start = p;
@@ -101,11 +103,35 @@ static wchar_t *raw_command_arg(void) {
             token_end--;
         }
         if (raw_token_takes_command(start, token_end)) {
-            return *end ? trim_outer_raw_quotes(end) : NULL;
+            return *end ? end : NULL;
         }
         p = end;
     }
     return NULL;
+}
+
+/* End of the first argument in raw command-line text, under the same rules
+ * CommandLineToArgvW applies: 2n backslashes before a quote are n literal
+ * backslashes and the quote toggles quoting, 2n+1 make the quote literal.
+ * skip_raw_token() toggles on every quote, so it would end a correctly
+ * escaped script like "printf \"A %s\" x" at its first inner space. */
+static const wchar_t *skip_crt_token(const wchar_t *p) {
+    int inquote = 0;
+    while (*p) {
+        if (*p == L'\\') {
+            size_t bs = 0;
+            while (*p == L'\\') { bs++; p++; }
+            if (*p == L'"' && (bs & 1)) p++;   /* escaped, literal quote */
+            continue;
+        }
+        if (*p == L'"') {
+            inquote = !inquote;
+        } else if (!inquote && (*p == L' ' || *p == L'\t')) {
+            break;
+        }
+        p++;
+    }
+    return p;
 }
 
 /*
@@ -262,17 +288,40 @@ static void protect_command_arg(int argc, wchar_t **argv) {
              *    wrong), while stripping the raw tail's outer quote pair
              *    recovers the script verbatim -- and its interior still
              *    contains bare, unescaped quotes.
-             * So: strip the raw tail's outer quotes; if the result has a
-             * bare quote it is the PS 5.1 form, use it; otherwise trust the
-             * CommandLineToArgvW parse. Either way the script reaches the
-             * child out-of-band via ZSH_LOADER_SCRIPT, never re-quoted onto
-             * a command line. */
-            wchar_t *rawScript = raw_command_arg();
-            if (rawScript && has_bare_quote(rawScript)) {
-                script = rawScript;
-            } else {
-                script = argv[i + 1];
+             * So: if the script's own raw argument, outer quotes stripped,
+             * has a bare quote it is the PS 5.1 form, and the raw tail is
+             * used; otherwise trust the CommandLineToArgvW parse. Either way
+             * the script reaches the child out-of-band via ZSH_LOADER_SCRIPT,
+             * never re-quoted onto a command line.
+             *
+             * Only the script's OWN argument may decide that, never the whole
+             * tail. The tail runs to the end of the command line, operands
+             * included, and checking all of it was a code-injection bug: from
+             * Git Bash, zsh -c 'printf "A %s\n" "$1"' _ hello arrives as
+             *   "printf \"A %s\n\" \"$1\"" _ hello
+             * which does not end in a quote, so nothing was stripped, the
+             * leading quote counted as bare, and script plus operands went to
+             * eval as one string -- an operand holding "; cmd; " ran cmd.
+             * The cost of the narrower check: under PS 5.1, a script with
+             * embedded quotes AND operands after it still cannot be told
+             * apart from its operands, and the raw tail (operands included)
+             * is used as before. That form has no correct parse; PS 5.1
+             * callers should write such a script to a file. */
+            const wchar_t *tail = raw_command_tail();
+            wchar_t *rawScript = NULL;
+            if (tail) {
+                size_t n = (size_t)(skip_crt_token(tail) - tail);
+                wchar_t *first = malloc((n + 1) * sizeof(wchar_t));
+                if (!first) die(L"out of memory");
+                wmemcpy(first, tail, n);
+                first[n] = L'\0';
+                wchar_t *firstScript = trim_outer_raw_quotes(first);
+                if (has_bare_quote(firstScript))
+                    rawScript = trim_outer_raw_quotes(tail);
+                free(firstScript);
+                free(first);
             }
+            script = rawScript ? rawScript : argv[i + 1];
             SetEnvironmentVariableW(L"ZSH_LOADER_SCRIPT", script);
             free(rawScript);
             argv[i + 1] = evalCommand;
