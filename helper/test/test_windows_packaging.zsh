@@ -276,7 +276,15 @@ test_c_operands_are_not_code() {
 # absolute path still worked. Seen 2026-10-19 on the installed build with
 # msys2-runtime 3.6.11; starting from the versioned directory or from
 # build/bin was fine, which is why this suite, run from build/bin, never saw
-# it. Reproduce the scoop layout with a junction to $BINDIR. ---------------
+# it. Reproduce the scoop layout with a junction to $BINDIR.
+#
+# Resolving the junction then exposed a second bug (v2, 2026-10-19): the app
+# directory, now recognized, became '/' first on PATH, and zsh looks a name
+# up by joining it to each entry -- '/' + '/head' is //head, a UNC path, so
+# every PATH-found external waited ~2.7 s on a network-name lookup before
+# falling through to /usr/bin, and now and then $(...) came back empty and
+# hung. The tools at the app root are copies of usr/bin's, so the root is no
+# longer put on PATH at all; slash= and slow= hold that. ------------------
 test_launch_through_junction() {
     local name="externals run when the launcher is reached through a junction"
     local jdir="${BINDIR:h}/bin-junction-test.$$"
@@ -290,10 +298,15 @@ test_launch_through_junction() {
     local out
     out=$("$jdir/zsh-loader.exe" -c '
         sleep 0; print -rn -- "sleep=$? "
-        ls -d / >/dev/null; print -r -- "ls=$?"' 2>&1)
+        ls -d / >/dev/null; print -rn -- "ls=$? "
+        print -rn -- "slash=${path[(Ie)/]} "
+        zmodload zsh/datetime
+        local t=$EPOCHREALTIME x
+        repeat 5; do x=$(uname -s); done
+        print -r -- "slow=$(( EPOCHREALTIME - t > 2.5 ))"' 2>&1)
     # rmdir on a junction removes the link only, never the target's files.
     MSYS2_ARG_CONV_EXCL='*' cmd /c rmdir "$jwin" >/dev/null 2>&1
-    if [[ $out == 'sleep=0 ls=0' ]]; then
+    if [[ $out == 'sleep=0 ls=0 slash=0 slow=0' ]]; then
         pass_test $name
     else
         fail_test $name "got: ${(qq)out}"

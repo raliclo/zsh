@@ -412,8 +412,15 @@ int main(void) {
     wchar_t oldPath[32768] = L"";
     GetEnvironmentVariableW(L"PATH", oldPath, 32768);
 
+    /* usr\bin only, not our own directory. Inside MSYS our directory IS '/',
+     * and zsh looks a name up by joining it to each PATH entry: '/' plus
+     * '/head' is //head, a UNC path, so every PATH-found external waited
+     * ~2.7 s on a network-name lookup before falling through, and $(...)
+     * sometimes came back empty and hung. Seen 2026-10-19, once the junction
+     * fix above made our directory recognizable as '/'. The tools at our
+     * root are copies of usr\bin's, so nothing is lost. */
     wchar_t newPath[65536];
-    swprintf(newPath, 65536, L"%ls;%ls\\usr\\bin;", dir, dir);
+    swprintf(newPath, 65536, L"%ls\\usr\\bin;", dir);
     {
         wchar_t *ctx = NULL;
         wchar_t *tmp = _wcsdup(oldPath);
