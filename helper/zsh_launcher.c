@@ -346,9 +346,42 @@ static void to_msys_drive(const wchar_t *winpath, wchar_t *out, size_t outlen) {
     out[base] = L'\0';
 }
 
+/* Rewrite path in place to its final form, with junctions and symlinks
+ * resolved. Scoop launches us as apps\zsh\current\zsh-loader.exe, and
+ * current is a JUNCTION to the versioned directory. GetModuleFileNameW keeps
+ * the junction spelling, but the MSYS runtime knows its root by the real
+ * path, so with ...\current on PATH it did not recognize that entry as '/'
+ * and every PATH-found external (sleep, ls, uname, ...) exited 127 with no
+ * message -- seen 2026-10-19 with msys2-runtime 3.6.11. Everything below
+ * derives from the directory found here, so resolving it once fixes all of
+ * it. On any failure the path is left as it was. */
+static void resolve_final_path(wchar_t *path, size_t cap) {
+    HANDLE h = CreateFileW(path, 0,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    wchar_t final[MAX_PATH];
+    DWORD n = GetFinalPathNameByHandleW(h, final, MAX_PATH,
+                                        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    CloseHandle(h);
+    if (n == 0 || n >= MAX_PATH) return;
+
+    /* The result is in \\?\ form: \\?\C:\dir or \\?\UNC\server\share. */
+    const wchar_t *p = final;
+    wchar_t unc[MAX_PATH];
+    if (wcsncmp(p, L"\\\\?\\UNC\\", 8) == 0) {
+        swprintf(unc, MAX_PATH, L"\\\\%ls", p + 8);
+        p = unc;
+    } else if (wcsncmp(p, L"\\\\?\\", 4) == 0) {
+        p += 4;
+    }
+    if (wcslen(p) < cap) wcscpy(path, p);
+}
+
 int main(void) {
     wchar_t exePath[MAX_PATH];
     if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) die(L"GetModuleFileNameW failed");
+    resolve_final_path(exePath, MAX_PATH);
 
     wchar_t dir[MAX_PATH];
     wcscpy(dir, exePath);
