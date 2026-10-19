@@ -645,12 +645,16 @@ for /f "tokens=2 delims=:" %%P in ('chcp') do set "_ZSH_ORIG_CP=%%P"
 set "_ZSH_ORIG_CP=%_ZSH_ORIG_CP: =%"
 chcp 65001 >nul
 
-rem Prepend the portable dir, then push the Windows system directories to
+rem Prepend the portable usr\bin, then push the Windows system directories to
 rem the very end of PATH. Those ship their own find/sort/more/where/... with
 rem non-POSIX behavior; left in their normal (early) position they shadow
 rem the real tools zsh expects -- e.g. Windows' find.exe instead of the GNU
-rem find bundled next to zsh.exe -- no matter what else is on PATH.
-set "PATH=%ZSH_PORTABLE_DIR%;%ZSH_PORTABLE_DIR%\usr\bin;%PATH%"
+rem find bundled in usr\bin -- no matter what else is on PATH.
+rem The portable dir itself is deliberately NOT on PATH: inside MSYS it is /,
+rem and zsh joins / with /name into //name, a UNC path that costs a ~2.7 s
+rem network lookup on every PATH search (2026-10-19). Its tools are copies
+rem of usr\bin's. Same rule as zsh_launcher.c.
+set "PATH=%ZSH_PORTABLE_DIR%\usr\bin;%PATH%"
 set "_ZSH_SYS32=%SystemRoot%\System32"
 set "_ZSH_SYSWOW=%SystemRoot%\SysWOW64"
 set "_ZSH_WINDIR=%SystemRoot%"
