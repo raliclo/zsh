@@ -267,6 +267,39 @@ test_c_operands_are_not_code() {
     done
 }
 
+# --- Scoop runs the launcher through apps\zsh\current, a JUNCTION to the
+# versioned directory. The launcher took its directory from
+# GetModuleFileNameW, which keeps the junction spelling, and put that on PATH;
+# the MSYS runtime knows the app directory by its real path, so it did not
+# recognize ...\current as '/'. Every PATH-found external -- sleep, ls, cat,
+# env, perl -- then exited 127 with no message, while /usr/bin/sleep by
+# absolute path still worked. Seen 2026-10-19 on the installed build with
+# msys2-runtime 3.6.11; starting from the versioned directory or from
+# build/bin was fine, which is why this suite, run from build/bin, never saw
+# it. Reproduce the scoop layout with a junction to $BINDIR. ---------------
+test_launch_through_junction() {
+    local name="externals run when the launcher is reached through a junction"
+    local jdir="${BINDIR:h}/bin-junction-test.$$"
+    local bwin="${(U)BINDIR[2]}:${BINDIR[3,-1]//\//\\}"
+    local jwin="${(U)jdir[2]}:${jdir[3,-1]//\//\\}"
+    MSYS2_ARG_CONV_EXCL='*' cmd /c mklink /J "$jwin" "$bwin" >/dev/null 2>&1
+    if [[ ! -e $jdir/zsh-loader.exe ]]; then
+        fail_test $name "could not create junction $jwin -> $bwin"
+        return
+    fi
+    local out
+    out=$("$jdir/zsh-loader.exe" -c '
+        sleep 0; print -rn -- "sleep=$? "
+        ls -d / >/dev/null; print -r -- "ls=$?"' 2>&1)
+    # rmdir on a junction removes the link only, never the target's files.
+    MSYS2_ARG_CONV_EXCL='*' cmd /c rmdir "$jwin" >/dev/null 2>&1
+    if [[ $out == 'sleep=0 ls=0' ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+}
+
 # --- A Windows drive path is absolute on this platform -- the runtime opens
 # it fine -- but it does not start with '/', so zsh's path modifiers used to
 # treat it as relative and prepend the cwd, turning C:/Users/x into
@@ -1217,6 +1250,7 @@ test_embedded_quotes
 test_nomatch_disabled_for_regex_args
 test_script_args_not_reinterpreted
 test_c_operands_are_not_code
+test_launch_through_junction
 test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled
