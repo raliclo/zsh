@@ -226,6 +226,47 @@ test_script_args_not_reinterpreted() {
     fi
 }
 
+# --- Operands after a -c script must arrive as $1, $2, ... and never as code.
+# protect_command_arg took the raw command-line text after -c as the script
+# whenever it held a bare quote -- the rescue for Windows PowerShell 5.1,
+# which does not escape embedded quotes. But that text runs to the END of the
+# command line, so it included the operands: from Git Bash,
+# `zsh -c 'printf "A %s\n" "$1"' _ hello` arrives as
+# `"printf \"A %s\n\" \"$1\"" _ hello`, which does not end in a quote, so the
+# leading quote counted as bare, and script plus operands went to eval as
+# one string. Seen as `command not found: printf "A %s\n" "hello"` (rc 127),
+# and an operand holding `"; cmd; "` ran cmd. Reported 2026-10-19 from the
+# multissh session. Now only the script's own token is checked for a bare
+# quote, so a correctly escaped script with operands is taken from argv. ---
+test_c_operands_are_not_code() {
+    local exe out name
+    for exe in $LAUNCHER $PUBLIC_EXE; do
+        name="${exe:t} -c operands arrive as positional parameters"
+        out=$("$exe" -f -c 'printf "A %s|%s\n" "$1" "$#"' _ hello 2>&1)
+        if [[ $out == 'A hello|1' ]]; then
+            pass_test $name
+        else
+            fail_test $name "got: ${(qq)out}"
+        fi
+
+        name="${exe:t} -c operand with spaces stays one parameter"
+        out=$("$exe" -f -c 'print -r -- "$#:$1"' _ 'hello world' 2>&1)
+        if [[ $out == '1:hello world' ]]; then
+            pass_test $name
+        else
+            fail_test $name "got: ${(qq)out}"
+        fi
+
+        name="${exe:t} -c operand text is not executed"
+        out=$("$exe" -f -c 'print -r -- "$1"' _ 'a"; print INJECTED; "' 2>&1)
+        if [[ $out == 'a"; print INJECTED; "' ]]; then
+            pass_test $name
+        else
+            fail_test $name "got: ${(qq)out}"
+        fi
+    done
+}
+
 # --- A Windows drive path is absolute on this platform -- the runtime opens
 # it fine -- but it does not start with '/', so zsh's path modifiers used to
 # treat it as relative and prepend the cwd, turning C:/Users/x into
@@ -1175,6 +1216,7 @@ test_pipe_in_quotes
 test_embedded_quotes
 test_nomatch_disabled_for_regex_args
 test_script_args_not_reinterpreted
+test_c_operands_are_not_code
 test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled
