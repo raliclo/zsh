@@ -313,6 +313,30 @@ test_launch_through_junction() {
     fi
 }
 
+# --- Up to v4 the package had no cygpath, so the name found Git Bash's, whose
+# / is Git's install dir: a mktemp dir under this runtime's /tmp came back as
+# C:/Windows/tmp.XXXX, a well-formed path that does not exist (2026-10-22,
+# reported by another session; helper/bugs/bugs-msys.md). TMPDIR is unset so
+# mktemp lands under / -- with TMPDIR inherited as C:/Users/.../Temp both
+# cygpaths agree and the test would pass against the broken package. ---------
+test_cygpath_is_this_runtimes() {
+    local name="cygpath is the bundled one and maps / paths to ones that exist"
+    # In this runtime / is the package dir, so the bundled copy is
+    # /usr/bin/cygpath; Git's shows up as /c/Program Files/Git/usr/bin/cygpath.
+    local out
+    out=$(env -u TMPDIR -u TMP -u TEMP "$LAUNCHER" -c '
+        print -rn -- "cygpath=$(whence -p cygpath) "
+        d=$(mktemp -d) || { print -r -- "mktemp failed"; exit 1 }
+        w=$(cygpath -m $d)
+        [[ -d $w ]] && print -r -- "exists=1" || print -r -- "exists=0 ($d -> $w)"
+        rm -rf $d' 2>&1 </dev/null)
+    if [[ $out == "cygpath=/usr/bin/cygpath exists=1" ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+}
+
 # --- A Windows drive path is absolute on this platform -- the runtime opens
 # it fine -- but it does not start with '/', so zsh's path modifiers used to
 # treat it as relative and prepend the cwd, turning C:/Users/x into
@@ -1315,6 +1339,7 @@ test_nomatch_disabled_for_regex_args
 test_script_args_not_reinterpreted
 test_c_operands_are_not_code
 test_launch_through_junction
+test_cygpath_is_this_runtimes
 test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled
