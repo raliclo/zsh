@@ -530,7 +530,16 @@ int main(void) {
      * expects a symlink, and nothing downstream notices. `nativestrict`
      * makes `ln -s` either create a real symlink or fail loudly, so a
      * missing SeCreateSymbolicLinkPrivilege shows up as an error instead
-     * of a wrong-but-successful copy. Respect an explicit override. */
+     * of a wrong-but-successful copy. Respect an explicit override.
+     *
+     * The price: nativestrict cannot link to a target that does not exist
+     * yet (`ln -s nowhere x` -> "No such file or directory"), because a
+     * Windows symlink must be created as either a file or a directory link
+     * and a missing target says neither. For a dangling link use
+     * `cmd /c mklink x nowhere`: Windows lists it as <SYMLINK> [nowhere].
+     * MSYS=winsymlinks:native also succeeds, but falls back to a link only
+     * Cygwin can read -- `dir /AL` shows <JUNCTION> [...], no target.
+     * Measured 2026-10-22. */
     if (GetEnvironmentVariableW(L"MSYS", NULL, 0) == 0) {
         SetEnvironmentVariableW(L"MSYS", L"winsymlinks:nativestrict");
     }
