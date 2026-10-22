@@ -1,12 +1,12 @@
 {
-    "version": "5.9.999.3-test.20261019v4.af81d2f61",
+    "version": "5.9.999.3-test.20261022v2.233190288",
     "description": "Zsh shell built from source with the MSYS2 toolchain (portable runtime)",
     "homepage": "https://www.zsh.org",
     "license": "Zsh (MIT-like)",
     "architecture": {
         "64bit": {
             "url": "https://github.com/raliclo/zsh/releases/download/zsh-portable/zsh.tar.zst",
-            "hash": "874c9999d07acdae23619aaec99a9ab7fe91e699d885b3e72ff7f6aa89e0ce46"
+            "hash": "1863b3ee018ce20b59a0b040761881d787dae2b5b383827b7ed17d1e882f3a0d"
         }
     },
     "bin": [
