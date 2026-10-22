@@ -2,7 +2,12 @@
 # msys2_upgrade.sh - Refresh MSYS2 packages used by the portable zsh build.
 #
 # Usage:
-#   sh helper/msys2_upgrade.sh [MSYS2_ROOT]
+#   sh helper/msys2_upgrade.sh [--pass 1|2] [MSYS2_ROOT]
+#
+# Normally driven by helper\compile.bat, which runs `--pass 1` and `--pass 2`
+# as two separate launches from cmd.exe (see below for why it must be cmd).
+# Without --pass, both passes run from this one script, which only works when
+# msys2-runtime is NOT being upgraded.
 #
 # This intentionally runs pacman through MSYS2 bash via a native cmd.exe
 # boundary when available. Launching one MSYS runtime directly from another
@@ -23,12 +28,18 @@
 # freshly installed runtime and converges. This is MSYS2's own documented
 # procedure, and it is why the first pass is allowed to fail without aborting.
 #
-# Because of that termination behaviour, run compile.sh from Git Bash,
-# PowerShell or cmd -- not from an MSYS2 shell, and not through the packaged
-# zsh. Those are separate runtimes, so a msys2-runtime upgrade cannot pull the
-# caller out from under itself. helper/README-win.md already recommends this
-# for unrelated reasons (the mount-table handover), so the requirement is not
-# new.
+# Who survives that termination decides who can run pass 2, and it is NOT
+# "any shell from a different runtime". pacman kills every process that has a
+# module named msys-2.0.dll loaded -- by name, whichever tree it came from.
+# Git for Windows ships its own msys-2.0.dll, so Git Bash dies too, and so
+# does the packaged zsh. This script used to say Git Bash would survive;
+# measured 2026-10-19, it did not: the build ended at "[exited with code 1]"
+# with neither the "pass 1 ended early" line nor pass 2 ever running.
+# `tasklist /fi "MODULES eq msys-2.0.dll"` lists Git Bash's bash.exe among
+# the targets. cmd.exe and PowerShell load no msys-2.0.dll, so only a native
+# driver survives -- hence helper\compile.bat. The same kill also closes any
+# other open zsh, Git Bash or MSYS2 window on the machine; nothing here can
+# prevent that.
 
 set -e
 
@@ -81,6 +92,15 @@ to_windows_path() {
     fi
 }
 
+PASS=
+if [ "${1:-}" = --pass ]; then
+    PASS=${2:-}
+    case "$PASS" in
+        1|2) shift 2 ;;
+        *) echo "error: --pass takes 1 or 2, got '$PASS'" >&2; exit 2 ;;
+    esac
+fi
+
 MSYS2_ROOT=${1:-${MSYS2_ROOT:-}}
 if [ -z "$MSYS2_ROOT" ]; then
     if [ -n "${HOME:-}" ]; then
@@ -107,8 +127,9 @@ mkdir -p "$MSYS2_ROOT/tmp"
 # includes the very bash running the script, so anything after that line,
 # `||` fallbacks included, never executes. Measured: a single script with
 # both passes inside ran pass 1, swapped the runtime, died, and pass 2 never
-# happened. Only the OUTER shell survives, because it is a different runtime
-# (Git Bash / cmd), so it is the one that has to drive the retry.
+# happened. The retry has to be driven by a process that survives, and per
+# the header that is cmd.exe (helper\compile.bat), not Git Bash -- this script
+# included, since it runs under an msys-2.0.dll of its own.
 write_upgrade_script() {
     cat > "$1" <<EOF_UPGRADE
 export PATH=/usr/bin:/clang64/bin:\$PATH
@@ -130,11 +151,22 @@ run_upgrade_script() {
 upgrade_script=$MSYS2_ROOT/tmp/zsh_msys2_upgrade.$$.sh
 
 # Pass 1: full upgrade. Allowed to fail -- being killed mid-transaction by a
-# runtime swap is the expected outcome, not an error.
-echo "==> MSYS2 full upgrade (pass 1 of 2)..."
-write_upgrade_script "$upgrade_script" ''
-run_upgrade_script "$upgrade_script" \
-    || echo "   pass 1 ended early (runtime swap); retrying in a fresh process"
+# runtime swap is the expected outcome, not an error. With --pass 1 its
+# status is returned for the caller to report; compile.bat goes on to pass 2
+# either way. When a runtime swap happens this script is killed before
+# either line below it runs.
+if [ "$PASS" != 2 ]; then
+    echo "==> MSYS2 full upgrade (pass 1 of 2)..."
+    write_upgrade_script "$upgrade_script" ''
+    if [ "$PASS" = 1 ]; then
+        rc=0
+        run_upgrade_script "$upgrade_script" || rc=$?
+        rm -f "$upgrade_script"
+        exit $rc
+    fi
+    run_upgrade_script "$upgrade_script" \
+        || echo "   pass 1 ended early; retrying in a fresh process"
+fi
 
 # Pass 2: fresh process against the new runtime, converging the upgrade and
 # only then installing what the build needs -- by now everything is on one

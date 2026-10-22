@@ -18,8 +18,8 @@ zsh is a POSIX shell and cannot be built with MSVC alone; it needs the MSYS2
 # one-time: installs MSYS2 + MSYS GCC, native Clang, and build tools
 & 'C:\Users\lowei\scoop\apps\msys2\current\usr\bin\bash.exe' -lc 'cd /c/Users/lowei/proj/zsh && sh helper/install_build_tool.sh'
 
-# build zsh into ./build
-& 'C:\Users\lowei\scoop\apps\msys2\current\usr\bin\bash.exe' -lc 'cd /c/Users/lowei/proj/zsh && sh helper/compile.sh'
+# build zsh into ./build (upgrades MSYS2 first, then runs helper/compile.sh)
+helper\compile.bat
 
 # optional: install the result as a Scoop app with a `zsh` shim
 & 'C:\Users\lowei\scoop\apps\msys2\current\usr\bin\bash.exe' -lc 'export PATH=/c/Users/lowei/scoop/shims:/c/Users/lowei/scoop/apps/git/current/cmd:/usr/bin:$PATH; cd /c/Users/lowei/proj/zsh && sh helper/scoop_install.sh'
@@ -50,6 +50,25 @@ The zsh interpreter uses the plain `msys/*` packages because its autotools
 build expects a Cygwin-like environment. Only `zsh-loader.exe` uses the
 CLANG64 compiler, keeping the launcher independent of `msys-2.0.dll` so
 nested zsh invocations start with fresh runtime state.
+
+### compile.bat
+
+The build entry point. It runs the MSYS2 full upgrade as two passes
+(`helper/msys2_upgrade.sh --pass 1`, then `--pass 2`), each a separate MSYS2
+`bash.exe` launched from cmd, and then runs `helper/compile.sh` with
+`ZSH_SKIP_MSYS2_UPGRADE=1` so the upgrade is not repeated. Its arguments go to
+`compile.sh` unchanged (`helper\compile.bat -f`). `--help` prints the header.
+
+It has to be cmd. When pacman upgrades `msys2-runtime` it kills every process
+with a module named `msys-2.0.dll` loaded — Git Bash included, since Git for
+Windows ships a DLL of that name — so a shell that drives the upgrade is killed
+in pass 1 and never reaches pass 2 or the build. cmd.exe loads no
+`msys-2.0.dll` and survives. That same kill also closes every other open zsh,
+Git Bash and MSYS2 window. Details: `helper/bugs/bugs-msys.md`.
+
+Running `sh helper/compile.sh` directly still works and still upgrades
+MSYS2, as long as `msys2-runtime` is not among the upgrades; when it is, the
+build stops at pass 1 with exit code 1 and needs to be run again.
 
 ### compile.sh
 
