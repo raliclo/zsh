@@ -46,6 +46,10 @@ it. That layer names the file.
 - An `msys2-runtime` upgrade kills every process with a DLL *named*
   `msys-2.0.dll` loaded — Git Bash and the packaged zsh included — so a shell
   script cannot drive the retry. `helper\compile.bat` does, from cmd.
+- Git Bash's `cygpath` maps this zsh's `/tmp` to `C:/Windows/tmp` — a valid
+  path that does not exist. The package now ships its own `cygpath`.
+- `ln -s` to a missing target fails under the launcher's `nativestrict`;
+  `cmd /c mklink` makes a real dangling symlink.
 
 **[bugs-zsh.md](bugs-zsh.md)**
 

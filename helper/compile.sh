@@ -437,6 +437,10 @@ EOF_FSTAB
     # MSYS2 /usr/bin/<tool>.exe equivalent, plus terminal/process helpers
     # used by zsh. ps must be the MSYS/Cygwin one with -W support, not
     # BusyBox ps; procps-ng/psmisc provide pgrep/pkill/pidof/killall.
+    # cygpath must be this runtime's own: without it zsh finds Git Bash's,
+    # whose / is Git's install dir, so /tmp/x from zsh came back as
+    # C:/Windows/tmp/x -- a well-formed path that does not exist
+    # (helper/bugs/bugs-msys.md).
     record_bundled_tool_version() {
         record_tool=\$1
         record_path=\$2
@@ -458,7 +462,7 @@ EOF_FSTAB
     }
 
     for tool in '[' ar arch ash awk base32 base64 basename bash bc cal cat chattr \
-        chmod cksum clear cmp comm cp cut date dc dd df diff dirname du env file \
+        chmod cksum clear cmp comm cp cut cygpath date dc dd df diff dirname du env file \
         expand expr factor false find flock fold getopt grep groups gzip \
         head hexdump id install join kill killall less link ln locale logname ls \
         lsattr lzcat lzma m4 make man md5sum mkdir mktemp mv nc nl nproc od \
