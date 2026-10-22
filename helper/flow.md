@@ -40,10 +40,15 @@ because it printed something reassuring.
   (whitespace/line-endings untouched), and `tr -dc '\r' | wc -c` is 0 for text
   files. `grep`/`sed`/`awk` cannot see CR on MSYS and will report 0 regardless.
 
-### 2. Build — `helper/compile.sh`
+### 2. Build — `helper\compile.bat` (runs `helper/compile.sh`)
 
-- Applies the patches, configures out-of-tree into `build/`, makes, then
+- Upgrades MSYS2 in two passes driven from cmd, then runs `compile.sh`,
+  which applies the patches, configures out-of-tree into `build/`, makes, then
   assembles the portable runtime in `build/bin`.
+- Start it from PowerShell or cmd, not from Git Bash: an `msys2-runtime`
+  upgrade kills every process with `msys-2.0.dll` loaded, Git Bash included,
+  and a caller that is killed reports a failure for a build that is still
+  running. See `helper/bugs/bugs-msys.md`.
 - Accept when: **`compile.sh`'s own exit code is 0**, and `Src/` is pristine
   afterwards. Not the wrapper's exit code, and not the harness's notification —
   both have reported success over a build that returned 1.

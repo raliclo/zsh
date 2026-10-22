@@ -1106,12 +1106,17 @@ test_msys2_tmp_startup() {
         return
     fi
     mkdir -p "$root/tmp" 2>/dev/null
-    local warn
-    warn=$(cmd /c "$msys_bash" -lc 'true' 2>&1 >/dev/null)
-    if [[ $warn != *"could not find /tmp"* ]]; then
+    # Windows path, and conversion off for this one call. A plain
+    # `cmd /c "$msys_bash"` from here never reached bash: the /c and the
+    # /c/Users path were both rewritten, cmd printed "'urrent' is not
+    # recognized", and the check below -- "no /tmp warning" -- passed on that
+    # (found 2026-10-22). Hence the READY marker: bash has to have run.
+    local out
+    out=$(MSYS2_ARG_CONV_EXCL='*' cmd /d /c "$(cygpath -w $msys_bash)" -lc 'echo READY' 2>&1 </dev/null)
+    if [[ $out == *READY* && $out != *"could not find /tmp"* ]]; then
         pass_test "MSYS2 bash (via native cmd.exe) starts without a /tmp warning"
     else
-        fail_test "MSYS2 bash (via native cmd.exe) starts without a /tmp warning" "got: ${(qq)warn}"
+        fail_test "MSYS2 bash (via native cmd.exe) starts without a /tmp warning" "got: ${(qq)out}"
     fi
 }
 
@@ -1126,6 +1131,52 @@ test_compile_runs_msys2_upgrade_helper() {
         pass_test "compile.sh runs the MSYS2 upgrade helper"
     else
         fail_test "compile.sh runs the MSYS2 upgrade helper" "missing helper invocation or skip flag"
+    fi
+}
+
+# --- an msys2-runtime upgrade kills every process with a DLL *named*
+# msys-2.0.dll loaded, Git Bash and this zsh included. compile.sh used to drive
+# both upgrade passes itself; it was killed in pass 1 and pass 2 never ran
+# (2026-10-19). compile.bat drives them from cmd, which survives. Guard the
+# shape: two separate --pass launches, both ahead of compile.sh, compile.sh
+# told not to upgrade again, the file ASCII (cmd reads it in the console code
+# page), and --help answering without building. ------------------------------
+test_compile_bat_drives_the_upgrade() {
+    local bat=$TEST_REPO_ROOT/helper/compile.bat
+    if [[ -z $TEST_REPO_ROOT || ! -f $bat ]]; then
+        fail_test "compile.bat drives the MSYS2 upgrade from cmd" "compile.bat not found at $bat"
+        return
+    fi
+    local p1 p2 skip build
+    p1=$(grep -n 'msys2_upgrade.sh" --pass 1' $bat | head -1 | cut -d: -f1)
+    p2=$(grep -n 'msys2_upgrade.sh" --pass 2' $bat | head -1 | cut -d: -f1)
+    skip=$(grep -n '^set "ZSH_SKIP_MSYS2_UPGRADE=1"' $bat | head -1 | cut -d: -f1)
+    build=$(grep -n 'helper/compile.sh" %\*' $bat | head -1 | cut -d: -f1)
+    if [[ -n $p1 && -n $p2 && -n $skip && -n $build ]] &&
+       (( p1 < p2 && p2 < skip && skip < build )); then
+        pass_test "compile.bat runs pass 1, pass 2, then compile.sh without a second upgrade"
+    else
+        fail_test "compile.bat runs pass 1, pass 2, then compile.sh without a second upgrade" \
+            "pass1='$p1' pass2='$p2' skip='$skip' compile='$build'"
+    fi
+
+    local nonascii
+    nonascii=$(LC_ALL=C tr -d '\0-\177' < $bat | wc -c)
+    if (( nonascii == 0 )); then
+        pass_test "compile.bat is ASCII"
+    else
+        fail_test "compile.bat is ASCII" "$nonascii non-ASCII bytes"
+    fi
+
+    local out
+    # Conversion off and a Windows path, as in test_msys2_tmp_startup: a plain
+    # `cmd /c` from here turns /c into a path and opens an interactive cmd.
+    out=$(MSYS2_ARG_CONV_EXCL='*' cmd /d /c "$(cygpath -w $bat)" --help 2>&1 </dev/null)
+    if [[ $out == "compile.bat - "* && $out == *"Keep this file ASCII."* &&
+          $out != *"==>"* ]]; then
+        pass_test "compile.bat --help prints the header and does nothing else"
+    else
+        fail_test "compile.bat --help prints the header and does nothing else" "got: ${(qq)out[1,200]}"
     fi
 }
 
@@ -1292,6 +1343,7 @@ test_pid_is_real_winpid
 test_multibyte_cursor_and_delete
 test_msys2_tmp_startup
 test_compile_runs_msys2_upgrade_helper
+test_compile_bat_drives_the_upgrade
 test_scoop_install_uses_github_release_assets
 test_scoop_install_verifies_the_install
 

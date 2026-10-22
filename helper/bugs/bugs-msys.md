@@ -172,3 +172,49 @@ already documented in `helper/test/test_windows_packaging.zsh`.
 
 **Rule:** use the bundled tools *through* the packaged zsh. If a call from
 Git Bash is unavoidable, pass `C:/...` form, which works.
+
+---
+
+## An `msys2-runtime` upgrade kills Git Bash too — by DLL name
+
+When pacman upgrades `msys2-runtime` it prints *"all MSYS2 processes including
+this terminal will be closed"* and runs `taskkill` on every process that has a
+module **named** `msys-2.0.dll` loaded. It matches the name, not the MSYS2
+tree. Git for Windows ships its own `msys-2.0.dll`, so Git Bash goes too, along
+with the packaged zsh and its bundled tools. Measured 2026-10-22:
+
+```
+tasklist /fi "MODULES eq msys-2.0.dll"
+bash.exe   35640    # this Git Bash -- /proc/$$/winpid
+zsh.exe    28540    # the packaged zsh
+tail.exe, grep.exe  # Git Bash tools
+```
+
+(`pacman.exe` carries both strings, `taskkill` and `msys-2.0.dll`.) From Git
+Bash the filter needs `MSYS2_ARG_CONV_EXCL='*'`, or `/fi` becomes a path — see
+the `//F` entry above.
+
+**What it broke.** `msys2_upgrade.sh` ran the upgrade twice so pass 2 could
+finish what a runtime swap interrupted, and its comment said the outer Git
+Bash would survive to drive pass 2 because it is "a different runtime". It
+does not. On 2026-10-19 the build ended like this, with neither the script's
+`pass 1 ended early` line nor pass 2 ever running:
+
+```
+:: To complete this update all MSYS2 processes including this terminal will be closed.
+SUCCESS: The process with PID 30192 has been terminated.
+SUCCESS: The process with PID 11900 has been terminated.
+SUCCESS: The process with PID 24220 has been terminated.
+[exited with code 1]
+```
+
+The second run then built normally, because by then the runtime was current,
+so it looked like a one-off. It recurs on every `msys2-runtime` release.
+
+**Fix:** drive the passes from a process with no `msys-2.0.dll`.
+`helper\compile.bat` runs `msys2_upgrade.sh --pass 1` and `--pass 2` as two
+MSYS2 `bash.exe` launches from cmd, then `compile.sh` with
+`ZSH_SKIP_MSYS2_UPGRADE=1`. cmd.exe (and PowerShell) survive the kill.
+
+**What no fix covers:** the same kill closes every other zsh, Git Bash and
+MSYS2 window open at the time, including other sessions' shells.
