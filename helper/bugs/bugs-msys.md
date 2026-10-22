@@ -218,3 +218,60 @@ MSYS2 `bash.exe` launches from cmd, then `compile.sh` with
 
 **What no fix covers:** the same kill closes every other zsh, Git Bash and
 MSYS2 window open at the time, including other sessions' shells.
+
+---
+
+## Git Bash's `cygpath` turns this zsh's `/tmp` into `C:/Windows/tmp`
+
+Up to v4 the package shipped no `cygpath`, so inside the packaged zsh the name
+found Git Bash's. Each runtime has its own `/`: this zsh's is its app dir, Git
+Bash's is `C:/Program Files/Git`. Git's `cygpath` launched from this zsh
+cannot resolve the caller's root either and maps `/tmp` to `C:/Windows`.
+Measured 2026-10-22, with `TMPDIR` unset:
+
+```
+whence -p cygpath   -> /c/Program Files/Git/usr/bin/cygpath
+mktemp -d           -> /tmp/tmp.4SBqAl3KSw        (exists, under the app dir)
+cygpath -m <that>   -> C:/Windows/tmp.4SBqAl3KSw  (does not exist)
+```
+
+A well-formed Windows path, so nothing errors where it is produced. Reported
+by another session: `cmd /c mklink` on it said *"The system cannot find the
+path specified"* and `wsl.exe -- wslpath -u` returned
+`/mnt/c/Windows/tmp.…` — read as "this machine cannot do junctions / WSL",
+not as a bad path. It hides in normal use, because `TMPDIR` is usually
+inherited as `C:/Users/…/Temp`, and `cygpath` of a `/c/...` path comes out
+right from either runtime. Only paths under this runtime's own `/` go wrong.
+
+**Fix:** `compile.sh` bundles MSYS2's `cygpath.exe` into `usr/bin`, so the
+name resolves inside the same runtime. Guarded by
+`test_cygpath_is_this_runtimes` in `helper/test/test_windows_packaging.zsh`.
+
+Same family as "Bundled tools do not resolve `/c/...`" above: a tool from one
+runtime handed a path that only makes sense in the other.
+
+---
+
+## `ln -s` to a missing target fails under this zsh
+
+The launcher sets `MSYS=winsymlinks:nativestrict` unless `MSYS` is already
+set, so `ln -s` makes a real Windows symlink or fails, instead of silently
+copying. Windows must create a symlink as a file link or a directory link, and
+a missing target is neither, so a *dangling* link cannot be made:
+
+```
+ln -s nowhere x   -> ln: failed to create symbolic link 'x': No such file or directory
+```
+
+Deliberate, kept (`helper/zsh_launcher.c`). For a dangling link, measured
+2026-10-22:
+
+| method | `[[ -L ]]`, `readlink` | what Windows sees (`dir /AL`) |
+|---|---|---|
+| `cmd /c mklink x nowhere` | yes, `nowhere` | `<SYMLINK> [nowhere]` |
+| `MSYS=winsymlinks:native ln -s nowhere x` | yes, `nowhere` | `<JUNCTION> [...]` — no target; Cygwin-only |
+
+Use `mklink` when anything outside MSYS will read the link. From zsh,
+`MSYS2_ARG_CONV_EXCL='*'` keeps `/c` from being turned into a path; from Git
+Bash, spell it `cmd //c` *without* that variable — with it, `//c` reaches cmd
+unconverted and cmd opens interactively and waits on stdin.
