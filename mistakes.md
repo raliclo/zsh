@@ -27,9 +27,35 @@ The background-task notification reports the exit code of the *outer* command.
 `printf 'DONE rc=%d' $?` appended to a log is the script's own code, and the two
 disagree exactly when it matters.
 
+**2026-10-19, a second day — the pipeline form.** `sh helper/compile.sh 2>&1 |
+tail -n 12` ran in the background and reported exit 0. The MSYS2 upgrade had
+swapped `msys2-runtime` and killed the build partway; the 0 was `tail`'s. The
+build was nearly judged good on that number, and was caught only because
+`build/bin/version.txt` still named the previous commit. In this shape the rc
+in the log is not the script's either: `printf rc=$?` after the pipe also
+prints `tail`'s.
+
+The same day another session read `$?` after `shim.exe --help | head -4` and
+built a report on "the shim fails but exits 0". Measured without the pipe it
+was rc=1. That entry belongs to its own tree; it is noted here only because the
+shape is identical.
+
 **Corrective.** Read the script's own status and the last lines of its output
 before saying anything about it. For anything long-running, append the real
 `rc=` to the log and read *that*.
+
+**Never pipe a command whose exit status is the verdict.** Redirect it to a
+file and read the file: `cmd > log 2>&1; printf 'rc=%s\n' $?` gives the
+command's own status, and `tail log` gives the summary. If a pipe cannot be
+avoided, read `${pipestatus[1]}` (zsh) or `${PIPESTATUS[0]}` (bash) on the very
+next line, before anything else resets it. Builds and releases go through
+`run_checked.zsh` too, not only suites: it runs the command unpiped and scans
+the whole output, so this form cannot reach it.
+
+The guard against this entry also failed: `counter.zsh check` reported every
+entry fine while `csv2` could not start, because it counted rows with
+`csv2 … | wc -l` — the pipe swallowed csv2's failure, zero rows meant nothing to
+check, and nothing to check printed ✓.
 
 ## 2. Asserting a cause, then acting on it, without a disproof
 
