@@ -221,3 +221,51 @@ Measured: one run instead of two.
 If the thing you want on interrupt is expensive, that is a sign the expensive
 part belongs in the normal flow and only the file removal belongs in the trap —
 which is also how you get to keep `INT` in the list.
+
+---
+
+## `$?` after a pipeline is the last command's — `| tail` turns a failure into 0
+
+`cmd | tail` exits with `tail`'s status, and `tail` succeeds. So does `head`,
+`grep` with a match, and `wc`. The failure of `cmd` is gone, and what is left
+is a clean 0 that reads exactly like success. Measured 2026-10-22 with
+`zsh -f` (bash agrees on 1–3):
+
+| form | result |
+|---|---|
+| 1. `false \| true; print $?` | `0` |
+| 2. `false \| true; print ${pipestatus[*]}` | `1 0` — bash: `${PIPESTATUS[*]}` |
+| 3. as 1, under `setopt pipefail` | `1` |
+| 4. `n=$(false \| wc -l)` | `n=0`, `$?=0` |
+| 5. as 4, under `pipefail` | `n=0`, `$?=1` — but only if something reads it |
+| 6. `for r in {1..$(false; print 0)}` | `$?=0`, and `{1..0}` is `1 0`: two passes |
+| 7. `false > /dev/null; print $?` | `1` — no pipe, nothing lost |
+
+Three times it cost something, all 2026-10-19:
+
+- `sh helper/compile.sh 2>&1 | tail -n 12` reported exit 0. The MSYS2 upgrade
+  had replaced `msys2-runtime` and killed the build partway. Caught only
+  because `build/bin/version.txt` still named the old commit.
+- `shim.exe --help 2>&1 | head -4; printf 'rc=%s' $?` printed `rc=0`, and a
+  report was built on "the shim fails but exits 0". Unpiped it was `rc=1`.
+- `counter.zsh check` (the mistakes_prevention skill) printed ✓ while `csv2`
+  could not start, **with `pipefail` already set**. The row count came from
+  `{1..$(csv2 … | wc -l)}` — form 6: the for-list drops the substitution's
+  status entirely, zero rows meant nothing to check, and nothing to check was
+  ✓.
+
+**`pipefail` is not the fix on its own.** It moves the failure into `$?`
+(form 3, 5), which helps only where something reads `$?` — and form 6 shows a
+place where nothing can.
+
+**The fix, by case:**
+
+- When the exit status *is* the verdict, do not pipe. Send the output to a
+  file and read both: `cmd > log 2>&1; printf 'rc=%s\n' $?`, then `tail log`.
+- When a pipe is unavoidable, read `${pipestatus[1]}` (bash
+  `${PIPESTATUS[0]}`) on the **very next line** — both shells reset it after the
+  next command, measured.
+- Do not put a command substitution whose failure matters in a `for` list or
+  `{1..N}`. Assign first, check, then loop: `rows=$(csv2 …) || die …`.
+- A check that can pass with zero items must say how many it checked, so
+  "checked 0" cannot be read as "all fine".

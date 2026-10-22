@@ -58,6 +58,9 @@ it. That layer names the file.
 - `trap ... EXIT` does not run when the shell is killed by a signal — and
   adding `INT TERM` makes the handler run **twice**, which matters if it does
   real work.
+- `$?` after `cmd | tail` is `tail`'s, so a failed build reads as 0.
+  `pipefail` alone does not cover it: a command substitution in a `for` list
+  drops its status entirely.
 
 **[bugs-build.md](bugs-build.md)**
 
