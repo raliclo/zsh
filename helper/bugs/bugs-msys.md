@@ -175,9 +175,15 @@ Git Bash is unavoidable, pass `C:/...` form, which works.
 
 ---
 
-## An `msys2-runtime` upgrade kills Git Bash too — by DLL name
+## A core MSYS2 upgrade kills Git Bash too — by DLL name
 
-When pacman upgrades `msys2-runtime` it prints *"all MSYS2 processes including
+First written as "an `msys2-runtime` upgrade". That was too narrow: on
+2026-10-29 the same kill fired for a core update with no runtime in it —
+`Packages (2) filesystem-2026.10.17-1 pacman-6.1.0-26`, then the same prompt
+and three `SUCCESS: … terminated` lines. Any package in pacman's *core system
+upgrade* stage can trigger it, and that stage comes first in every `-Syu`.
+
+When pacman upgrades a core package it prints *"all MSYS2 processes including
 this terminal will be closed"* and runs `taskkill` on every process that has a
 module **named** `msys-2.0.dll` loaded. It matches the name, not the MSYS2
 tree. Git for Windows ships its own `msys-2.0.dll`, so Git Bash goes too, along
@@ -209,7 +215,15 @@ SUCCESS: The process with PID 24220 has been terminated.
 ```
 
 The second run then built normally, because by then the runtime was current,
-so it looked like a one-off. It recurs on every `msys2-runtime` release.
+so it looked like a one-off. It recurs on every core-package release.
+
+**The fix, seen working (2026-10-29).** Through `compile.bat`, pass 1 ended
+with exit code 1 after the kill, cmd printed `pass 1 ended with exit code 1`,
+ran pass 2 in a fresh process (which went on to upgrade clang and 14 other
+packages), and the build finished with rc 0. A side effect worth knowing: the
+`filesystem` update made MSYS2 rerun its first-start setup, which copied
+skeleton `.bashrc`/`.bash_profile`/`.profile`/`.vimrc` into the MSYS2 home.
+Those files are new, nothing was overwritten, and the build ignores them.
 
 **Fix:** drive the passes from a process with no `msys-2.0.dll`.
 `helper\compile.bat` runs `msys2_upgrade.sh --pass 1` and `--pass 2` as two

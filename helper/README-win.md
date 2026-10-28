@@ -59,7 +59,8 @@ The build entry point. It runs the MSYS2 full upgrade as two passes
 `ZSH_SKIP_MSYS2_UPGRADE=1` so the upgrade is not repeated. Its arguments go to
 `compile.sh` unchanged (`helper\compile.bat -f`). `--help` prints the header.
 
-It has to be cmd. When pacman upgrades `msys2-runtime` it kills every process
+It has to be cmd. When pacman upgrades a core package (`msys2-runtime`,
+`pacman`, `filesystem`, …) it kills every process
 with a module named `msys-2.0.dll` loaded — Git Bash included, since Git for
 Windows ships a DLL of that name — so a shell that drives the upgrade is killed
 in pass 1 and never reaches pass 2 or the build. cmd.exe loads no
@@ -67,7 +68,7 @@ in pass 1 and never reaches pass 2 or the build. cmd.exe loads no
 Git Bash and MSYS2 window. Details: `helper/bugs/bugs-msys.md`.
 
 Running `sh helper/compile.sh` directly still works and still upgrades
-MSYS2, as long as `msys2-runtime` is not among the upgrades; when it is, the
+MSYS2, as long as no core package is among the upgrades; when one is, the
 build stops at pass 1 with exit code 1 and needs to be run again.
 
 ### compile.sh
