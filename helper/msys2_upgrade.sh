@@ -131,10 +131,16 @@ mkdir -p "$MSYS2_ROOT/tmp"
 # happened. The retry has to be driven by a process that survives, and per
 # the header that is cmd.exe (helper\compile.bat), not Git Bash -- this script
 # included, since it runs under an msys-2.0.dll of its own.
+# The -Syu status must end the script on failure. Without the `|| exit`, the
+# script's status was its LAST command's: in pass 2 that is the
+# `pacman -S --needed` install, which succeeds on its own, so a failed full
+# upgrade (mirror 503s, a signature error) reported 0 and the build went on
+# against a half-upgraded tree. Found by review 2026-10-29; reproduced with a
+# pacman stub whose -Syu fails: rc 0 before, rc 1 after.
 write_upgrade_script() {
     cat > "$1" <<EOF_UPGRADE
 export PATH=/usr/bin:/clang64/bin:\$PATH
-pacman --noconfirm -Syu
+pacman --noconfirm -Syu || exit \$?
 $2
 EOF_UPGRADE
 }

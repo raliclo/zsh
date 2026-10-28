@@ -1204,6 +1204,65 @@ test_compile_bat_drives_the_upgrade() {
     fi
 }
 
+# --- Five defects from a review on 2026-10-29, each of which reported success
+# for something that had not happened. Static where running the real thing
+# would upgrade MSYS2 or publish a release; live where it costs a second. ----
+test_build_and_release_report_what_happened() {
+    local helper=$TEST_REPO_ROOT/helper
+    local name out
+
+    # 1. The generated upgrade script ended with `pacman -S --needed`, so its
+    #    status was that install's and a failed -Syu read as 0.
+    name="msys2_upgrade.sh: a failed pacman -Syu fails the pass"
+    if grep -qF 'pacman --noconfirm -Syu || exit' $helper/msys2_upgrade.sh; then
+        pass_test $name
+    else
+        fail_test $name "the generated script does not stop on a failed -Syu"
+    fi
+
+    # 2. --upload-release fell through to stop/uninstall/install.
+    name="scoop_install.sh --upload-release stops before installing"
+    local guard install
+    guard=$(grep -n 'if \[ -n "\$UPLOAD_RELEASE" \] && \[ -z "\$INSTALL_REMOTE" \]' $helper/scoop_install.sh | head -1 | cut -d: -f1)
+    install=$(grep -n '^# --- 3. Install through scoop' $helper/scoop_install.sh | head -1 | cut -d: -f1)
+    if [[ -n $guard && -n $install ]] && (( guard < install )); then
+        pass_test $name
+    else
+        fail_test $name "guard line='$guard' install line='$install'"
+    fi
+
+    # 3. compile.sh replaced the MSYS2_ROOT compile.bat had just upgraded.
+    #    Live: a root with no bash must stop it before any work. The skip flag
+    #    and the missing source dir are there so that a regression -- the root
+    #    ignored again -- cannot turn this test into an MSYS2 upgrade and a
+    #    build.
+    name="compile.sh honours MSYS2_ROOT and rejects one without bash"
+    out=$(MSYS2_ROOT='C:\nowhere\msys2' ZSH_SKIP_MSYS2_UPGRADE=1 \
+          sh $helper/compile.sh "${TEST_REPO_ROOT}/no-such-source.$$" 2>&1 </dev/null)
+    if [[ $out == *"MSYS2_ROOT="*"has no usr/bin/bash.exe"* && $out != *"==> Source tree"* ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out[1,200]}"
+    fi
+
+    # 4. The CRLF fallback reused ../zsh-build at whatever commit it held.
+    name="compile.sh moves the CRLF fallback worktree to HEAD"
+    if grep -qF 'git -C "$WT" checkout -q --detach "$want"' $helper/compile.sh; then
+        pass_test $name
+    else
+        fail_test $name "existing worktree is not moved to HEAD"
+    fi
+
+    # 5. The package was labelled with HEAD, not the commit it was built from.
+    name="scoop_install.sh labels the package with the commit it was built from"
+    if grep -qF 'BUILT_SHA=$(sed -n 2p "$BUILD/bin/version.txt"' $helper/scoop_install.sh &&
+       grep -qF -- '--commit "$BUILT_SHA"' $helper/scoop_install.sh; then
+        pass_test $name
+    else
+        fail_test $name "version label or publish --commit still taken from HEAD"
+    fi
+}
+
 # --- the install must be CHECKED, not announced. scoop prints its refusal and
 # still exits 0, so a blocked uninstall left the previous build in place while
 # the script printed "Installed." and returned 0 -- the release was uploaded
@@ -1369,6 +1428,7 @@ test_multibyte_cursor_and_delete
 test_msys2_tmp_startup
 test_compile_runs_msys2_upgrade_helper
 test_compile_bat_drives_the_upgrade
+test_build_and_release_report_what_happened
 test_scoop_install_uses_github_release_assets
 test_scoop_install_verifies_the_install
 
