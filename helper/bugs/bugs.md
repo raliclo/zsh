@@ -43,7 +43,8 @@ it. That layer names the file.
   the conversion *fails* with ENOTDIR and the argv path swallows the error.
 - `MSYS2_ARG_CONV_EXCL='*'` breaks `//F`, and the kill silently does not happen.
 - Bundled tools do not resolve `/c/...` when invoked from outside.
-- An `msys2-runtime` upgrade kills every process with a DLL *named*
+- A core MSYS2 upgrade (`msys2-runtime`, `pacman`, `filesystem`, …) kills
+  every process with a DLL *named*
   `msys-2.0.dll` loaded — Git Bash and the packaged zsh included — so a shell
   script cannot drive the retry. `helper\compile.bat` does, from cmd.
 - Git Bash's `cygpath` maps this zsh's `/tmp` to `C:/Windows/tmp` — a valid
