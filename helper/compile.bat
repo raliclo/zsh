@@ -10,10 +10,11 @@ rem   set MSYS2_ROOT=C:\msys64       MSYS2 location, Windows form; default is
 rem                                  scoop's msys2, then C:\msys64
 rem
 rem Run it from cmd or PowerShell. Started from Git Bash it still completes,
-rem but the Git Bash that started it is killed if msys2-runtime is upgraded.
+rem but the Git Bash that started it is killed if a core package is upgraded.
 rem
 rem Why this is a .bat and not part of compile.sh:
-rem When pacman upgrades msys2-runtime it kills every process that has a
+rem When pacman upgrades a core package (msys2-runtime, pacman, filesystem...;
+rem measured for pacman+filesystem on 2026-10-29) it kills every process that has a
 rem module named msys-2.0.dll loaded -- by name, whichever tree it came from.
 rem Git for Windows ships a DLL with that name, so Git Bash dies along with
 rem MSYS2's own shells and the packaged zsh, and a shell script driving the
@@ -64,7 +65,7 @@ rem Pass 1 may be killed by a runtime swap; that is expected, so its status
 rem is reported and not acted on. Pass 2 is a fresh process on the new runtime
 rem and must succeed.
 "%MSYS2_BASH%" -l "%REPO_FWD%/helper/msys2_upgrade.sh" --pass 1 "%MSYS2_ROOT%"
-if errorlevel 1 echo    pass 1 ended with exit code %errorlevel% (expected if msys2-runtime was upgraded); running pass 2 in a fresh process
+if errorlevel 1 echo    pass 1 ended with exit code %errorlevel% (expected if a core package was upgraded); running pass 2 in a fresh process
 "%MSYS2_BASH%" -l "%REPO_FWD%/helper/msys2_upgrade.sh" --pass 2 "%MSYS2_ROOT%"
 if errorlevel 1 (
     echo error: MSYS2 upgrade pass 2 failed; not building 1>&2

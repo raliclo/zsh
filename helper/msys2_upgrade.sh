@@ -7,7 +7,7 @@
 # Normally driven by helper\compile.bat, which runs `--pass 1` and `--pass 2`
 # as two separate launches from cmd.exe (see below for why it must be cmd).
 # Without --pass, both passes run from this one script, which only works when
-# msys2-runtime is NOT being upgraded.
+# no core package (msys2-runtime, pacman, filesystem...) is being upgraded.
 #
 # This intentionally runs pacman through MSYS2 bash via a native cmd.exe
 # boundary when available. Launching one MSYS runtime directly from another
@@ -22,8 +22,9 @@
 # -- a mismatch can produce an artifact that works on the build machine by
 # accident and breaks once packaged and unpacked elsewhere.
 #
-# The upgrade runs TWICE by design. If the first pass upgrades msys2-runtime
-# itself, MSYS2 terminates every running MSYS process to complete the update,
+# The upgrade runs TWICE by design. If the first pass upgrades a core package
+# (msys2-runtime itself, but also pacman or filesystem -- measured
+# 2026-10-29), MSYS2 terminates every running MSYS process to complete the update,
 # which can kill pacman mid-transaction; the second pass then runs against the
 # freshly installed runtime and converges. This is MSYS2's own documented
 # procedure, and it is why the first pass is allowed to fail without aborting.
@@ -122,7 +123,7 @@ fi
 mkdir -p "$MSYS2_ROOT/tmp"
 
 # The two passes must be two SEPARATE process launches, not two commands in
-# one script. When pacman replaces msys2-runtime it announces "all MSYS2
+# one script. When pacman replaces a core package it announces "all MSYS2
 # processes including this terminal will be closed" and kills them -- which
 # includes the very bash running the script, so anything after that line,
 # `||` fallbacks included, never executes. Measured: a single script with

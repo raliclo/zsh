@@ -4,7 +4,7 @@
 # Prerequisite: sh helper/install_build_tool.sh
 #
 # Usage -- normally through the cmd.exe wrapper, which upgrades MSYS2 first
-# in a way that survives an msys2-runtime update, then runs this script:
+# in a way that survives a core MSYS2 update, then runs this script:
 #   helper\compile.bat [-f] [source-dir]
 # Directly (from Git Bash or any POSIX shell):
 #   sh helper/compile.sh [-f] [source-dir]
@@ -157,8 +157,8 @@ mkdir -p "$MSYS2_ROOT/tmp"
 # to consume a pre-prepared toolchain without mutating it.
 #
 # helper\compile.bat runs the upgrade itself and sets that variable, and it is
-# the entry point to use. Upgrading from here cannot survive an msys2-runtime
-# update: pacman then kills every process with an msys-2.0.dll loaded, which
+# the entry point to use. Upgrading from here cannot survive a core-package
+# update (msys2-runtime, pacman, filesystem...): pacman then kills every process with an msys-2.0.dll loaded, which
 # includes this shell whether it is MSYS2's or Git Bash's, so the build ends
 # at pass 1 with exit code 1 (see helper/bugs/bugs-msys.md).
 if [ "${ZSH_SKIP_MSYS2_UPGRADE:-}" != 1 ]; then
