@@ -110,10 +110,23 @@ to_windows_path() {
     fi
 }
 
-MSYS2_HOME=$(to_msys_path "$HOME")
-MSYS2_ROOT="$MSYS2_HOME/scoop/apps/msys2/current"
-[ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="$(to_msys_path "$USERPROFILE")/scoop/apps/msys2/current"
-[ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="/c/msys64"
+# An MSYS2_ROOT from the environment wins, and is not silently replaced:
+# compile.bat sets it to the tree it just upgraded, and this used to overwrite
+# it with the scoop default -- upgrade tree A, compile with tree B. Found by
+# review 2026-10-29. A given root that has no bash is an error, not a cue to
+# go looking elsewhere.
+if [ -n "${MSYS2_ROOT:-}" ]; then
+    MSYS2_ROOT=$(to_msys_path "$MSYS2_ROOT")
+    if [ ! -x "$MSYS2_ROOT/usr/bin/bash.exe" ]; then
+        echo "error: MSYS2_ROOT=$MSYS2_ROOT has no usr/bin/bash.exe" >&2
+        exit 1
+    fi
+else
+    MSYS2_HOME=$(to_msys_path "$HOME")
+    MSYS2_ROOT="$MSYS2_HOME/scoop/apps/msys2/current"
+    [ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="$(to_msys_path "$USERPROFILE")/scoop/apps/msys2/current"
+    [ -x "$MSYS2_ROOT/usr/bin/bash.exe" ] || MSYS2_ROOT="/c/msys64"
+fi
 MSYS2_BASH="$MSYS2_ROOT/usr/bin/bash.exe"
 MSYS2_USR_BIN="$MSYS2_ROOT/usr/bin"
 
@@ -187,8 +200,25 @@ fi
 if [ -f "$SRC/configure.ac" ] && grep -q "$(printf '\r')" "$SRC/configure.ac"; then
     echo "==> Source tree has CRLF line endings; using clean worktree ../zsh-build"
     WT="$SRC/../zsh-build"
+    want=$(git -C "$SRC" rev-parse HEAD)
     if [ ! -d "$WT" ]; then
-        git -C "$SRC" worktree add --detach "$WT" HEAD
+        git -C "$SRC" worktree add --detach "$WT" "$want"
+    else
+        # An existing worktree is moved to HEAD, not reused as it stands: it
+        # was created at whatever HEAD was the first time, so reusing it built
+        # old sources -- and version.txt, which reads the worktree's commit,
+        # named that old commit, so nothing looked wrong. Found by review
+        # 2026-10-29. Refuse rather than discard local changes in it.
+        if [ -n "$(git -C "$WT" status --porcelain)" ]; then
+            echo "error: $WT has uncommitted changes; clean or remove it first" >&2
+            exit 1
+        fi
+        git -C "$WT" checkout -q --detach "$want"
+    fi
+    got=$(git -C "$WT" rev-parse HEAD)
+    if [ "$got" != "$want" ]; then
+        echo "error: $WT is at $got, expected $want" >&2
+        exit 1
     fi
     SRC=$(cd "$WT" && pwd)
 fi

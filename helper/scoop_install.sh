@@ -246,7 +246,25 @@ fi
 # go on skipping the update -- reintroducing the exact bug this fixes.
 BASE_VERSION=$("$BUILD/bin/zsh.exe" --version | awk '{print $2}')
 BUILD_DATE=$(date +%Y%m%d)
-SHORT_SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)
+# The commit is the one the binaries were BUILT from (version.txt line 2,
+# written by compile.sh), not the current HEAD. Labelling with HEAD said a
+# package came from whatever was checked out at release time, even when
+# build/bin was older -- and publish.zsh then recorded that same HEAD in the
+# Release notes and as its --target. Found by review 2026-10-29.
+BUILT_SHA=$(sed -n 2p "$BUILD/bin/version.txt" 2>/dev/null)
+case "$BUILT_SHA" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+    *)
+        echo "error: no build commit in $BUILD/bin/version.txt (got '$BUILT_SHA'); rerun helper/compile.sh" >&2
+        exit 1
+        ;;
+esac
+SHORT_SHA=$(git -C "$REPO" rev-parse --short "$BUILT_SHA" 2>/dev/null) || SHORT_SHA=$(printf '%.9s' "$BUILT_SHA")
+HEAD_SHA=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo nogit)
+if [ "$BUILT_SHA" != "$HEAD_SHA" ]; then
+    echo "warning: build/bin was built from $SHORT_SHA, but HEAD is now $(printf '%.9s' "$HEAD_SHA");" >&2
+    echo "         packaging it as $SHORT_SHA. Rebuild first if HEAD's changes belong in it." >&2
+fi
 
 # The counter restarts at v1 each new day. It is derived from the version
 # already in bucket/zsh.json rather than from local state, so it stays
@@ -372,8 +390,21 @@ if [ -n "$UPLOAD_RELEASE" ]; then
     "$PUBLISH_ZSH" "$REPO/helper/publish.zsh" \
         --archive "$ARCHIVE" \
         --version "$VERSION" \
+        --commit "$BUILT_SHA" \
         --tag "$RELEASE_TAG" \
         --repo "$GITHUB_REPO" || exit 1
+fi
+
+# --upload-release alone means "publish, do not install", as the header says.
+# It used to fall through to the install below -- stopping running zsh,
+# uninstalling, and installing from the LOCAL zip -- because only
+# --package-only exited here. Found by review 2026-10-29.
+if [ -n "$UPLOAD_RELEASE" ] && [ -z "$INSTALL_REMOTE" ]; then
+    echo "==> --upload-release: published; install left untouched."
+    echo "    bucket/zsh.json now names this release -- commit it, or a fresh"
+    echo "    'scoop install zsh' fails its hash check. To install it here:"
+    echo "      scoop install '$REPO_WIN/bucket/zsh.json'"
+    exit 0
 fi
 
 if [ -n "$PACKAGE_ONLY" ]; then
