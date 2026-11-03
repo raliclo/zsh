@@ -1,0 +1,84 @@
+diff --git a/Src/main.c b/Src/main.c
+index bad698ee7..5138b14c9 100644
+--- a/Src/main.c
++++ b/Src/main.c
+@@ -86,9 +86,79 @@ cygwin_premain0 (int argc, char **argv, void *myself)
+ /**/
+ #endif /* __CYGWIN__ */
+ 
++#ifdef __CYGWIN__
++/*
++ * Declared here rather than through <windows.h>, whose macros (IN, OUT,
++ * DELETE, ERROR, ...) collide with names zsh already uses. All of these
++ * live in kernel32, which every Cygwin program links.
++ */
++extern void *__stdcall GetConsoleWindow(void);
++extern unsigned int __stdcall GetConsoleCP(void);
++extern void *__stdcall GetModuleHandleA(const char *);
++extern void *__stdcall GetProcAddress(void *, const char *);
++extern void *__stdcall GetStdHandle(unsigned long);
++extern int __stdcall SetStdHandle(unsigned long, void *);
++#define ZSH_STD_INPUT_HANDLE  ((unsigned long)-10)
++#define ZSH_STD_OUTPUT_HANDLE ((unsigned long)-11)
++#define ZSH_STD_ERROR_HANDLE  ((unsigned long)-12)
++
++/*
++ * Started with no console at all (DETACHED_PROCESS, as GUI apps and agent
++ * hosts do), zsh itself is fine, but every console program it then runs
++ * gets a NEW console from Windows: a window or Windows Terminal tab per
++ * command. Measured 2026-11-04 calling usr/bin/zsh.exe directly: three
++ * windows for `sleep 1; where.exe cmd; curl ...`, none when the same zsh
++ * was given a console without a window.
++ *
++ * So give ourselves exactly that: a console with no window, which children
++ * inherit. AllocConsoleWithOptions exists from Windows 11 24H2; it is looked
++ * up at run time, and where it is missing nothing changes. AllocConsole
++ * may point the Win32 std handles at the new console, so they are saved
++ * and put back: the caller's pipes stay where output goes.
++ */
++typedef struct {
++    int mode;                   /* ALLOC_CONSOLE_MODE */
++    int useShowWindow;          /* BOOL */
++    unsigned short showWindow;  /* WORD */
++} zsh_alloc_console_options;
++typedef long (__stdcall *zsh_alloc_console_fn)(const zsh_alloc_console_options *,
++                                               int *);
++
++static void
++windowless_console_if_none(void)
++{
++    void *in, *out, *err, *kernel32;
++    zsh_alloc_console_fn alloc;
++    zsh_alloc_console_options opts = { 2 /* ALLOC_CONSOLE_MODE_NO_WINDOW */,
++                                       0, 0 };
++    int result;
++
++    if (GetConsoleWindow() != NULL || GetConsoleCP() != 0)
++        return;
++    kernel32 = GetModuleHandleA("kernel32.dll");
++    if (!kernel32)
++        return;
++    alloc = (zsh_alloc_console_fn)(void (*)(void))
++        GetProcAddress(kernel32, "AllocConsoleWithOptions");
++    if (!alloc)
++        return;
++    in = GetStdHandle(ZSH_STD_INPUT_HANDLE);
++    out = GetStdHandle(ZSH_STD_OUTPUT_HANDLE);
++    err = GetStdHandle(ZSH_STD_ERROR_HANDLE);
++    if (alloc(&opts, &result) < 0)      /* FAILED(hr) */
++        return;
++    SetStdHandle(ZSH_STD_INPUT_HANDLE, in);
++    SetStdHandle(ZSH_STD_OUTPUT_HANDLE, out);
++    SetStdHandle(ZSH_STD_ERROR_HANDLE, err);
++}
++#endif /* __CYGWIN__ */
++
+ /**/
+ int
+ main(int argc, char **argv)
+ {
++#ifdef __CYGWIN__
++    windowless_console_if_none();
++#endif
+     return (zsh_main(argc, argv));
+ }

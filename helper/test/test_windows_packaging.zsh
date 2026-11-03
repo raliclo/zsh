@@ -369,6 +369,58 @@ sys.stdout.write(p.stdout.decode("utf-8", "replace"))
     fi
 }
 
+# --- The same caller reaching usr/bin/zsh.exe directly, past the launcher.
+# zsh's output was fine, but every program it forked and exec'd got a new
+# console from Windows: measured 2026-11-04, two windows for
+# `sleep 1; where.exe`, one per command. (Not `where.exe /q`: MSYS turns
+# `/q` into a drive path and where.exe rejects it.) Nothing in the output shows it, so
+# this counts console windows that appear while it runs. A new console
+# always brings a new ConsoleWindowClass or PseudoConsoleWindow handle, also
+# when Windows Terminal hosts the tab. The patch
+# (helper/patches/windows-detached-console.patch) gives a console-less zsh a
+# console with no window, which its children inherit. ------------------------
+test_detached_interpreter_children_open_no_console() {
+    local name="usr/bin/zsh.exe with no console runs programs without new windows"
+    local py=${commands[python]:-${commands[python3]}}
+    if [[ -z $py ]]; then
+        skip_test $name "no python to start a DETACHED_PROCESS caller"
+        return
+    fi
+    local out
+    out=$("$py" -c '
+import ctypes, subprocess, sys, time
+from ctypes import wintypes
+u = ctypes.WinDLL("user32")
+PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+def consoles():
+    seen = set()
+    def cb(h, _):
+        b = ctypes.create_unicode_buffer(64)
+        u.GetClassNameW(h, b, 64)
+        if b.value in ("ConsoleWindowClass", "PseudoConsoleWindow"):
+            seen.add(int(h))
+        return True
+    u.EnumWindows(PROC(cb), 0)
+    return seen
+before = consoles()
+p = subprocess.Popen([sys.argv[1], "-f", "-c",
+                      "/usr/bin/sleep 1; where.exe cmd >/dev/null; printf done"],
+                     creationflags=0x00000008, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+new = set()
+while p.poll() is None:
+    new |= consoles() - before
+    time.sleep(0.05)
+o = p.communicate(timeout=60)[0].decode("utf-8", "replace")
+sys.stdout.write("%s windows=%d" % (o.strip(), len(new)))
+' "$(cygpath -w "$INTERP")" 2>&1 </dev/null)
+    if [[ $out == "done windows=0" ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+}
+
 # --- A Windows drive path is absolute on this platform -- the runtime opens
 # it fine -- but it does not start with '/', so zsh's path modifiers used to
 # treat it as relative and prepend the cwd, turning C:/Users/x into
@@ -1444,6 +1496,7 @@ test_c_operands_are_not_code
 test_launch_through_junction
 test_cygpath_is_this_runtimes
 test_detached_caller_gets_output_without_a_console
+test_detached_interpreter_children_open_no_console
 test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled

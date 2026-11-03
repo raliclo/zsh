@@ -80,11 +80,16 @@ Build-time paths are MSYS2 paths, not packaged-runtime paths. Prefer
 helper accepts `/mnt/<drive>/...` input for convenience, but converts it to
 `/<drive>/...` before running `configure`, `make`, and packaging steps.
 
-1. Verifies `Src/Zle/zle.h` and `Src/Zle/zle_move.c` still match the sha256
-   checksums in `helper/patches/checksum.txt`, then applies
-   `helper/patches/windows-zle-surrogate-pairs.patch` to the source tree.
+1. Verifies the files it patches still match the sha256 checksums in
+   `helper/patches/checksum.txt`, then applies the three patches in
+   `helper/patches/` to the source tree, and reverts them when the build ends:
+   `windows-zle-surrogate-pairs.patch` (`Src/Zle/zle.h`, `zle_move.c`),
+   `windows-drive-abspath.patch` (`Src/hist.c`, `subst.c`) and
+   `windows-detached-console.patch` (`Src/main.c`: a zsh started with no
+   console gets a windowless one, so the programs it runs open no windows).
    Refuses to build if the checksums don't match (see "The ZLE surrogate-pair
-   patch" below).
+   patch" below). This step used to name only the ZLE patch; the drive-path
+   patch had been applied here, undocumented, since 2026-08.
 2. Runs `Util/preconfig` (autoconf) in the source tree if `configure` doesn't
    exist yet.
 3. Runs `configure` and `make -j$(nproc)` **inside `build/`** (VPATH build),

@@ -32,15 +32,23 @@ if grep -q cygdrivepath Src/hist.c 2>/dev/null; then
     echo "       or: git checkout -- Src/hist.c Src/subst.c" >&2
     exit 1
 fi
+if grep -q windowless_console_if_none Src/main.c 2>/dev/null; then
+    echo "error: Src/main.c has the detached-console patch applied right now;" >&2
+    echo "       checksum.txt must be generated from the pristine file. Revert" >&2
+    echo "       it first: git apply -R helper/patches/windows-detached-console.patch" >&2
+    echo "       or: git checkout -- Src/main.c" >&2
+    exit 1
+fi
 
 {
     echo "# sha256 checksums of the pristine (unpatched) files that the patches"
     echo "# in helper/patches/ were written against."
     echo "#   zle.h, zle_move.c -> windows-zle-surrogate-pairs.patch"
     echo "#   hist.c, subst.c   -> windows-drive-abspath.patch"
+    echo "#   main.c            -> windows-detached-console.patch"
     echo "# Verified with: sha256sum -c helper/patches/checksum.txt"
     echo "# generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    sha256sum Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c
+    sha256sum Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c Src/main.c
 } > helper/patches/checksum.txt
 
 echo "==> Wrote helper/patches/checksum.txt:"
