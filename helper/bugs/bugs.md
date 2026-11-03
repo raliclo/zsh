@@ -53,7 +53,8 @@ it. That layer names the file.
   `cmd /c mklink` makes a real dangling symlink.
 - A caller with no console (`DETACHED_PROCESS`) got a new console tab per zsh
   call, and the output went there and not to the caller. Fixed in the
-  launcher; Scoop's shim still opens one of its own. Calling
+  launcher. Scoop's shim opened one of its own; it is now replaced by the
+  launcher itself (`post_install`). Calling
   `usr/bin/zsh.exe` directly was worse, one window per command zsh ran;
   fixed by a build patch to `main()`.
 - `VAR=x sh ...` from this zsh loses `VAR` when `sh` is Git's. A test's

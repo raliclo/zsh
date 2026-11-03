@@ -350,6 +350,26 @@ Output still arrives. A host that starts zsh detached should call
 `apps/zsh/current/zsh.exe` (the root copy of the loader) or `zsh-loader.exe`
 directly.
 
+> **Fixed 2026-11-04; the "titled with the shim's path" reading was a
+> guess.** A peer's test confirmed one window per call through the shim. The
+> cause is that `shim.exe` is a console program starting the loader with no
+> special flags, so Windows opens a console *for the loader* before the
+> loader runs, and the loader then sees a console and changes nothing.
+> Nothing in the loader could prevent that, so the shim is now gone: the
+> manifest's `post_install` copies `zsh-loader.exe` over
+> `shims\zsh.exe`, and the loader, finding no `usr\bin\zsh.exe` beside it,
+> reads the `path = "..."` line of the `zsh.shim` Scoop writes next to it.
+> `scoop reset zsh` re-creates the generic shim without running
+> `post_install`: it still works, but pops up again until the next
+> install or update.
+>
+> The first version of the loader change, run as a copy with no `zsh.shim`,
+> fell back to "`zsh.exe` in my own directory", which was itself. It
+> started itself without end and reached **7175** `zsh.exe` processes before
+> the file was renamed to break the chain. The loader now refuses when that
+> fallback resolves to its own path. `test_loader_runs_as_scoop_shim_copy`
+> covers both, under `timeout`.
+
 ---
 
 ## Environment prefixes do not reach Git's `sh` from this zsh
