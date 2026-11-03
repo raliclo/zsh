@@ -305,6 +305,14 @@ Not MSYS2's fork. Once `zsh.exe` has a console, its MSYS children inherit it
 and open nothing. The window comes from the native launcher's one
 `CreateProcess`.
 
+> **Only half right (2026-11-04).** True for calls through the launcher. A
+> caller that runs `usr/bin/zsh.exe` directly gives zsh *no* console, and then
+> it *is* the fork: every program zsh forks and execs gets its own new
+> console, one window per command. A peer's test found it (two windows per
+> run), and it was reproduced with a 20-line MSYS program: `fork` + `execv`
+> of `sleep` and `where.exe` opened 2 windows, `system()` opened none, which
+> is why the first probe here missed it. See the next entry.
+
 Measured 2026-11-03 by starting `zsh-loader.exe -c '...; printf ok'` from
 Python with each creation flag and enumerating visible console windows before
 and after:
@@ -321,6 +329,19 @@ Fix (`helper/zsh_launcher.c`): when the launcher has no console
 console present nothing changes. Asserted by
 `test_detached_caller_gets_output_without_a_console`; against the old loader
 it fails with `got: ''`.
+
+**Calling `usr/bin/zsh.exe` directly (fixed 2026-11-04).** With no console,
+each program zsh forked and exec'd got a new console window. Measured with
+the packaged runtime, the fork+exec probe gave 2 windows without the fix and
+0 with it, twice each. `helper/patches/windows-detached-console.patch` makes
+`main()` give a console-less zsh a console with no window
+(`AllocConsoleWithOptions` with `ALLOC_CONSOLE_MODE_NO_WINDOW`, Windows 11
+24H2+, looked up at run time), and children inherit it. The Win32 std
+handles are saved and restored around the call, so the caller's pipes still
+carry the output. Asserted by
+`test_detached_interpreter_children_open_no_console`, which counts new
+`ConsoleWindowClass`/`PseudoConsoleWindow` handles; against the unpatched
+build it fails with `done windows=2`.
 
 **Not fixed: the Scoop shim.** Through `~/scoop/shims/zsh.exe` a
 `DETACHED_PROCESS` caller still gets a tab, titled with the *shim's* path, so

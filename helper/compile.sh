@@ -249,6 +249,7 @@ mkdir -p "$BUILD" 2>/dev/null || mkdir -p "$BUILD_MSYS"
 # may not mean what it says.
 ZLE_PATCH="$REPO/helper/patches/windows-zle-surrogate-pairs.patch"
 DRIVE_PATCH="$REPO/helper/patches/windows-drive-abspath.patch"
+CONSOLE_PATCH="$REPO/helper/patches/windows-detached-console.patch"
 ZLE_CHECKSUMS="$REPO/helper/patches/checksum.txt"
 ZLE_BACKUP="$BUILD/zle-patch-backup"
 ZLE_RESTORE_FROM_BACKUP=
@@ -283,7 +284,7 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
     if ! ( cd "$SRC" && grep -v '^#' "$ZLE_CHECKSUMS" | sha256sum -c - ) >/dev/null 2>&1; then
         if [ -n "$FORCE" ]; then
             echo "warning: one or more of Src/Zle/zle.h, Src/Zle/zle_move.c," >&2
-            echo "         Src/hist.c, Src/subst.c no longer matches" >&2
+            echo "         Src/hist.c, Src/subst.c, Src/main.c no longer matches" >&2
             echo "         helper/patches/checksum.txt; building anyway (-f). The" >&2
             echo "         patches below may not apply cleanly, or may apply but no" >&2
             echo "         longer mean what their comments say. Run" >&2
@@ -291,7 +292,7 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
             echo "         still correct." >&2
         else
             echo "error: one or more of Src/Zle/zle.h, Src/Zle/zle_move.c," >&2
-            echo "       Src/hist.c, Src/subst.c no longer matches the versions the" >&2
+            echo "       Src/hist.c, Src/subst.c, Src/main.c no longer matches the versions the" >&2
             echo "       patches in helper/patches/ were written against (see" >&2
             echo "       helper/patches/checksum.txt). Refusing to build until the" >&2
             echo "       patches are reviewed and checksum.txt updated" >&2
@@ -318,6 +319,12 @@ if [ -f "$ZLE_PATCH" ] && ! grep -q ZSH_IS_HIGH_SURROGATE "$SRC/Src/Zle/zle.h" 2
     echo "==> Applying Windows drive-path (:A/:a/:P) patch..."
     backup_patch_targets Src/hist.c Src/subst.c
     git -C "$SRC" apply "$DRIVE_PATCH"
+
+    # Same lifecycle again. A zsh started with no console gets a windowless
+    # one, so the programs it runs do not each pop up a console window.
+    echo "==> Applying Windows detached-console patch..."
+    backup_patch_targets Src/main.c
+    git -C "$SRC" apply "$CONSOLE_PATCH"
 elif [ -d "$ZLE_BACKUP" ]; then
     # A previous run was interrupted after patching. Recover from the backup
     # directory alone rather than from a sentinel in one particular file:
@@ -329,7 +336,7 @@ elif [ -d "$ZLE_BACKUP" ]; then
     # Each file is compared against its backup, so files that were never
     # patched (or were already restored) are skipped and the trap does not
     # clobber anything with a stale copy.
-    for _leftover in Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c; do
+    for _leftover in Src/Zle/zle.h Src/Zle/zle_move.c Src/hist.c Src/subst.c Src/main.c; do
         if [ -f "$ZLE_BACKUP/$_leftover" ] && \
            ! cmp -s "$ZLE_BACKUP/$_leftover" "$SRC/$_leftover"; then
             PATCHED_FILES="$PATCHED_FILES $_leftover"
