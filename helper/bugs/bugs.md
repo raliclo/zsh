@@ -51,6 +51,11 @@ it. That layer names the file.
   path that does not exist. The package now ships its own `cygpath`.
 - `ln -s` to a missing target fails under the launcher's `nativestrict`;
   `cmd /c mklink` makes a real dangling symlink.
+- A caller with no console (`DETACHED_PROCESS`) got a new console tab per zsh
+  call, and the output went there and not to the caller. Fixed in the
+  launcher; Scoop's shim still opens one of its own.
+- `VAR=x sh ...` from this zsh loses `VAR` when `sh` is Git's. A test's
+  "skip the upgrade" guard vanished that way and ran a real `pacman -Syu`.
 
 **[bugs-zsh.md](bugs-zsh.md)**
 

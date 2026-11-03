@@ -337,6 +337,38 @@ test_cygpath_is_this_runtimes() {
     fi
 }
 
+# --- GUI apps and agent hosts start shells with DETACHED_PROCESS: no console
+# at all. The launcher used to start zsh.exe with creation flags 0, so Windows
+# gave zsh.exe a NEW console -- a window, or a Windows Terminal tab titled
+# ...\usr\bin\zsh.exe, popping up on every call -- and zsh's output went to
+# that window, not to the host's pipe. Measured 2026-11-03. The output is the
+# part a test can see: before the fix it came back empty. The Scoop shim pops
+# up a console of its own in the same situation (the tab is titled with the
+# shim's path); that is scoop's shim.exe, not this launcher, so hosts should
+# call apps/zsh/current/zsh.exe or zsh-loader.exe directly. Python is the
+# only DETACHED_PROCESS spawner at hand, so without it this is skipped. ------
+test_detached_caller_gets_output_without_a_console() {
+    local name="a caller with no console gets zsh's output and no new console"
+    local py=${commands[python]:-${commands[python3]}}
+    if [[ -z $py ]]; then
+        skip_test $name "no python to start a DETACHED_PROCESS caller"
+        return
+    fi
+    local out
+    out=$("$py" -c '
+import subprocess, sys
+p = subprocess.run([sys.argv[1], "-c", "printf detached-ok"],
+                   creationflags=0x00000008, stdin=subprocess.DEVNULL,
+                   capture_output=True, timeout=60)
+sys.stdout.write(p.stdout.decode("utf-8", "replace"))
+' "$(cygpath -w "$LAUNCHER")" 2>&1 </dev/null)
+    if [[ $out == detached-ok ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+}
+
 # --- A Windows drive path is absolute on this platform -- the runtime opens
 # it fine -- but it does not start with '/', so zsh's path modifiers used to
 # treat it as relative and prepend the cwd, turning C:/Users/x into
@@ -1237,12 +1269,24 @@ test_build_and_release_report_what_happened() {
     #    ignored again -- cannot turn this test into an MSYS2 upgrade and a
     #    build.
     name="compile.sh honours MSYS2_ROOT and rejects one without bash"
+    #    Those guards only hold if the variables reach sh. Run as
+    #    `usr/bin/zsh.exe -f` instead of through the loader, PATH finds Git's
+    #    sh, and both variables arrived EMPTY across the runtime boundary: the
+    #    test started a real `pacman -Syu` on 2026-11-03. So check that they
+    #    arrive first, and skip rather than run compile.sh blind.
+    local seen
+    seen=$(MSYS2_ROOT='C:\nowhere\msys2' ZSH_SKIP_MSYS2_UPGRADE=1 \
+           sh -c 'printf "%s|%s" "$MSYS2_ROOT" "$ZSH_SKIP_MSYS2_UPGRADE"' 2>&1 </dev/null)
+    if [[ $seen != *'|1' || $seen != *nowhere* ]]; then
+        skip_test $name "sh ($(whence -p sh)) did not receive the guard variables: ${(qq)seen}"
+    else
     out=$(MSYS2_ROOT='C:\nowhere\msys2' ZSH_SKIP_MSYS2_UPGRADE=1 \
           sh $helper/compile.sh "${TEST_REPO_ROOT}/no-such-source.$$" 2>&1 </dev/null)
     if [[ $out == *"MSYS2_ROOT="*"has no usr/bin/bash.exe"* && $out != *"==> Source tree"* ]]; then
         pass_test $name
     else
         fail_test $name "got: ${(qq)out[1,200]}"
+    fi
     fi
 
     # 4. The CRLF fallback reused ../zsh-build at whatever commit it held.
@@ -1399,6 +1443,7 @@ test_script_args_not_reinterpreted
 test_c_operands_are_not_code
 test_launch_through_junction
 test_cygpath_is_this_runtimes
+test_detached_caller_gets_output_without_a_console
 test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled

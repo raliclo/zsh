@@ -587,7 +587,27 @@ int main(void) {
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
 
-    BOOL ok = CreateProcessW(zshExe, newCmdLine, NULL, NULL, TRUE, 0,
+    /* No console of our own means a host started us with DETACHED_PROCESS
+     * (GUI apps and agent hosts do). zsh.exe is a console program, so with
+     * creation flags 0 Windows gives it a NEW console -- a visible window, or
+     * a new Windows Terminal tab titled ...\usr\bin\zsh.exe -- and its output
+     * goes there instead of to the host's pipes. Measured 2026-11-03 with a
+     * DETACHED_PROCESS caller: one new window per launch and empty output.
+     * CREATE_NO_WINDOW gives zsh.exe a console that has no window; its MSYS
+     * children inherit that console, so they do not pop up either. A child
+     * with its own console does not reliably get our std handles, so pass
+     * them explicitly. With a console present nothing changes: the child
+     * shares it, as before. */
+    DWORD creationFlags = 0;
+    if (GetConsoleWindow() == NULL && GetConsoleCP() == 0) {
+        creationFlags = CREATE_NO_WINDOW;
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    }
+
+    BOOL ok = CreateProcessW(zshExe, newCmdLine, NULL, NULL, TRUE, creationFlags,
                              NULL, currentDirectory, &si, &pi);
     DWORD exitCode = 1;
     if (!ok) {
