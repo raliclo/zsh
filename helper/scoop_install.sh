@@ -337,6 +337,12 @@ HASH=$(sha256sum "$ARCHIVE" | awk '{print $1}')
 echo "==> sha256: $HASH"
 
 # --- 2. Regenerate the scoop manifest ----------------------------------------
+# post_install is PowerShell that Scoop runs after creating the shim. Three
+# layers of quoting meet in that one line: this heredoc (\$ keeps $dir for
+# PowerShell, \\\\ becomes \\), JSON (\\ becomes \, \" becomes ") and
+# PowerShell. It must come out as
+#   Copy-Item -LiteralPath "$dir\zsh-loader.exe" -Destination "$(shimdir $global)\zsh.exe" -Force
+# Checked 2026-11-04 by loading the generated file with a JSON parser.
 mkdir -p "$BUCKET"
 cat > "$BUCKET/zsh.json" <<EOF
 {
@@ -356,7 +362,10 @@ cat > "$BUCKET/zsh.json" <<EOF
             "zsh"
         ]
     ],
-    "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release $RELEASE_TAG at $ORIGIN. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
+    "post_install": [
+        "Copy-Item -LiteralPath \"\$dir\\\\zsh-loader.exe\" -Destination \"\$(shimdir \$global)\\\\zsh.exe\" -Force"
+    ],
+    "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release $RELEASE_TAG at $ORIGIN. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched. post_install then replaces shims\\\\zsh.exe with zsh-loader.exe itself, which finds the install through zsh.shim: Scoop's generic shim.exe made Windows open a console window for every call from a caller with no console."
 }
 EOF
 echo "==> Wrote $BUCKET/zsh.json (url: $PUBLIC_URL)"

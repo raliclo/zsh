@@ -369,14 +369,57 @@ sys.stdout.write(p.stdout.decode("utf-8", "replace"))
     fi
 }
 
+# --- Scoop's shim.exe gave every console-less caller a window: it starts its
+# target as a console program with no flags, so Windows opened a console for
+# the loader before the loader ran. The manifest's post_install copies the
+# loader over shims\zsh.exe instead; the copy finds the install through the
+# zsh.shim beside it. Without that file it must stop, not fall back to
+# "zsh.exe in my own directory" -- which is itself: the first version did,
+# and reached 7175 processes. Run under `timeout` so a regression costs
+# seconds and leaves no process storm behind. ---------------------------------
+test_loader_runs_as_scoop_shim_copy() {
+    local name="the loader works as a copy in Scoop's shims directory"
+    local d=$(mktemp -d) out rc
+    cp "$LAUNCHER" "$d/zsh.exe"
+    printf 'path = "%s"\r\n' "$(cygpath -w "$LAUNCHER")" > "$d/zsh.shim"
+    out=$(timeout 30 "$d/zsh.exe" -c 'printf "%s" "$ZSH_VERSION"' 2>&1 </dev/null)
+    if [[ $out == "$ZSH_VERSION" ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+
+    name="a shim copy without zsh.shim stops instead of starting itself"
+    rm -f "$d/zsh.shim"
+    out=$(timeout 30 "$d/zsh.exe" -c 'printf ran' 2>&1 </dev/null)
+    rc=$?
+    if (( rc == 1 )) && [[ $out == *"no zsh interpreter found"* ]]; then
+        pass_test $name
+    else
+        fail_test $name "rc=$rc got: ${(qq)out[1,200]}"
+    fi
+    rm -rf "$d"
+
+    name="the manifest replaces the generic shim with the loader"
+    local installer=${TEST_REPO_ROOT:+$TEST_REPO_ROOT/helper/scoop_install.sh}
+    if [[ -z $installer || ! -f $installer ]]; then
+        skip_test $name "repo root not given"
+    elif grep -qF '"post_install": [' $installer &&
+         grep -qF 'zsh-loader.exe\" -Destination \"\$(shimdir \$global)\\\\zsh.exe\"' $installer; then
+        pass_test $name
+    else
+        fail_test $name "no post_install copying zsh-loader.exe over the shim"
+    fi
+}
+
 # --- The same caller reaching usr/bin/zsh.exe directly, past the launcher.
 # zsh's output was fine, but every program it forked and exec'd got a new
 # console from Windows: measured 2026-11-04, two windows for
 # `sleep 1; where.exe`, one per command. (Not `where.exe /q`: MSYS turns
-# `/q` into a drive path and where.exe rejects it.) Nothing in the output shows it, so
-# this counts console windows that appear while it runs. A new console
-# always brings a new ConsoleWindowClass or PseudoConsoleWindow handle, also
-# when Windows Terminal hosts the tab. The patch
+# `/q` into a drive path and where.exe rejects it.) Nothing in the output
+# shows it, so this counts console windows that appear while it runs. A new
+# console always brings a new ConsoleWindowClass or PseudoConsoleWindow
+# handle, also when Windows Terminal hosts the tab. The patch
 # (helper/patches/windows-detached-console.patch) gives a console-less zsh a
 # console with no window, which its children inherit. ------------------------
 test_detached_interpreter_children_open_no_console() {
@@ -1497,6 +1540,7 @@ test_launch_through_junction
 test_cygpath_is_this_runtimes
 test_detached_caller_gets_output_without_a_console
 test_detached_interpreter_children_open_no_console
+test_loader_runs_as_scoop_shim_copy
 test_drive_path_modifiers
 test_find_bundled
 test_xargs_bundled

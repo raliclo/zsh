@@ -343,11 +343,13 @@ in `bucket/zsh.json`:
    - creates the `~/scoop/shims/zsh` shim from the manifest's `zsh-loader.exe`
      entry (the native launcher, not `zsh.cmd` — see "Running the built
      binary" above for why), so `zsh` works from any shell with scoop's
-     shims on `PATH`, with argv preserved exactly. A host that starts zsh
-     with no console (`DETACHED_PROCESS`, as GUI apps and agent hosts do)
-     should call `~/scoop/apps/zsh/current/zsh.exe` instead: Scoop's shim opens
-     a console window of its own in that case, and the launcher does not
-     (see `helper/bugs/bugs-msys.md`);
+     shims on `PATH`, with argv preserved exactly. The manifest's
+     `post_install` then replaces that shim with `zsh-loader.exe` itself,
+     which finds the install through `zsh.shim`. Scoop's generic `shim.exe`
+     made Windows open a console window on every call from a host with no
+     console (`DETACHED_PROCESS`, as GUI apps and agent hosts do); see
+     `helper/bugs/bugs-msys.md`. After `scoop reset zsh` the generic shim is
+     back until the next install or update;
    - uses the wrapper and packaged `.zshenv` to set `module_path`, `HOME`,
      `TERMINFO`, prompt defaults, and Backspace bindings without relying on
      the ignored `MODULE_PATH` environment variable.

@@ -32,6 +32,7 @@
 #include <wchar.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void die(const wchar_t *msg) {
     fwprintf(stderr, L"zsh-launcher: %ls\n", msg);
@@ -393,6 +394,62 @@ static BOOL WINAPI ignore_interrupt(DWORD type) {
     return type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT;
 }
 
+/* Installed as Scoop's shim. Scoop's own shim.exe is a console program that
+ * starts its target with no special flags, so a caller with no console got a
+ * new console window for the loader before the loader ran -- nothing here
+ * could stop that (measured 2026-11-04: one window per call through
+ * shims\zsh.exe, none through apps\zsh\current\zsh.exe). The manifest's
+ * post_install therefore copies this launcher over shims\zsh.exe. A copy there
+ * has no usr\bin\zsh.exe beside it, so find the install directory the way
+ * shim.exe would: from the `path = "..."` line of the zsh.shim file Scoop
+ * writes next to it. Returns 1 and rewrites exePath on success. */
+static int follow_scoop_shim(wchar_t *exePath, size_t cap) {
+    wchar_t shimFile[MAX_PATH];
+    wcscpy(shimFile, exePath);
+    wchar_t *dot = wcsrchr(shimFile, L'.');
+    wchar_t *slash = wcsrchr(shimFile, L'\\');
+    if (!dot || (slash && dot < slash)) return 0;
+    if ((size_t)(dot - shimFile) + 6 > MAX_PATH) return 0;
+    wcscpy(dot, L".shim");
+
+    HANDLE h = CreateFileW(shimFile, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    char buf[4096];
+    DWORD n = 0;
+    BOOL ok = ReadFile(h, buf, sizeof(buf) - 1, &n, NULL);
+    CloseHandle(h);
+    if (!ok) return 0;
+    buf[n] = '\0';
+
+    /* Scoop writes UTF-8, one `key = value` per line. */
+    for (char *line = buf; line && *line; ) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+        while (*line == ' ' || *line == '\t' || *line == '\xEF' ||
+               *line == '\xBB' || *line == '\xBF') line++;
+        if (strncmp(line, "path", 4) == 0) {
+            char *v = line + 4;
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v++ != '=') { line = next; continue; }
+            while (*v == ' ' || *v == '\t') v++;
+            char *end = v + strlen(v);
+            while (end > v && (end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) end--;
+            if (end - v >= 2 && *v == '"' && end[-1] == '"') { v++; end--; }
+            *end = '\0';
+            wchar_t target[MAX_PATH];
+            if (!MultiByteToWideChar(CP_UTF8, 0, v, -1, target, MAX_PATH)) return 0;
+            if (GetFileAttributesW(target) == INVALID_FILE_ATTRIBUTES) return 0;
+            if (wcslen(target) >= cap) return 0;
+            wcscpy(exePath, target);
+            resolve_final_path(exePath, cap);
+            return 1;
+        }
+        line = next;
+    }
+    return 0;
+}
+
 int main(void) {
     wchar_t exePath[MAX_PATH];
     if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) die(L"GetModuleFileNameW failed");
@@ -404,6 +461,21 @@ int main(void) {
     if (!lastSlash) die(L"unexpected exe path (no backslash)");
     *lastSlash = L'\0';
 
+    /* Running as a copy in Scoop's shims directory: move to the real
+     * install. Checked before the zsh.exe fallback below, which in the
+     * shims directory would find this very program and start it again. */
+    {
+        wchar_t probe[MAX_PATH];
+        swprintf(probe, MAX_PATH, L"%ls\\usr\\bin\\zsh.exe", dir);
+        if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES &&
+            follow_scoop_shim(exePath, MAX_PATH)) {
+            wcscpy(dir, exePath);
+            lastSlash = wcsrchr(dir, L'\\');
+            if (!lastSlash) die(L"unexpected shim target path (no backslash)");
+            *lastSlash = L'\0';
+        }
+    }
+
     /* The real interpreter is installed as usr\bin\zsh.exe; this launcher is
      * packaged as zsh-loader.exe and used by the Scoop shim named zsh for
      * programmatic callers that need argv preserved exactly. */
@@ -411,6 +483,26 @@ int main(void) {
     swprintf(zshExe, MAX_PATH, L"%ls\\usr\\bin\\zsh.exe", dir);
     if (GetFileAttributesW(zshExe) == INVALID_FILE_ATTRIBUTES) {
         swprintf(zshExe, MAX_PATH, L"%ls\\zsh.exe", dir);
+    }
+    /* The fallback can name this launcher itself -- it is installed as
+     * zsh.exe too, and as a shim copy whose zsh.shim is missing it finds
+     * nothing else. Starting it would start it again, without end: tried
+     * 2026-11-04 in a scratch directory, it reached 7175 zsh.exe processes
+     * before the file was renamed to break the chain. */
+    {
+        wchar_t self[MAX_PATH], target[MAX_PATH];
+        if (GetModuleFileNameW(NULL, self, MAX_PATH)) {
+            resolve_final_path(self, MAX_PATH);
+            wcscpy(target, zshExe);
+            resolve_final_path(target, MAX_PATH);
+            if (_wcsicmp(self, target) == 0) {
+                fwprintf(stderr, L"zsh-launcher: no zsh interpreter found: %ls\\usr\\bin\\zsh.exe "
+                                 L"is missing, and %ls is this launcher. If this is a copy in "
+                                 L"Scoop's shims directory, its zsh.shim is missing or wrong.\n",
+                         dir, zshExe);
+                return 1;
+            }
+        }
     }
 
     /* --- PATH: prepend our dir, push Windows system dirs to the end ---
