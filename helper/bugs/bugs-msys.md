@@ -289,3 +289,62 @@ Use `mklink` when anything outside MSYS will read the link. From zsh,
 `MSYS2_ARG_CONV_EXCL='*'` keeps `/c` from being turned into a path; from Git
 Bash, spell it `cmd //c` *without* that variable — with it, `//c` reaches cmd
 unconverted and cmd opens interactively and waits on stdin.
+
+---
+
+## A caller with no console got a new window per zsh call — and lost the output
+
+GUI apps and agent hosts start shells with `DETACHED_PROCESS`: the shell has
+no console at all. `zsh-loader.exe` started `zsh.exe` with creation flags 0,
+and a console program started that way from a process without a console gets
+a **new** console. On this machine that is a new Windows Terminal tab titled
+`...\usr\bin\zsh.exe`, once per call. zsh's output went to that tab, not to the
+caller's pipe, so the caller got nothing back and still saw exit status 0.
+
+Not MSYS2's fork. Once `zsh.exe` has a console, its MSYS children inherit it
+and open nothing. The window comes from the native launcher's one
+`CreateProcess`.
+
+Measured 2026-11-03 by starting `zsh-loader.exe -c '...; printf ok'` from
+Python with each creation flag and enumerating visible console windows before
+and after:
+
+| caller started with | before the fix | after |
+|---|---|---|
+| flags 0 (has a console) | no window, output `ok` | same |
+| `CREATE_NO_WINDOW` | no window, output `ok` | same |
+| `DETACHED_PROCESS` | **new tab, output empty** | no window, output `ok` |
+
+Fix (`helper/zsh_launcher.c`): when the launcher has no console
+(`GetConsoleWindow()` is NULL and `GetConsoleCP()` is 0), start `zsh.exe` with
+`CREATE_NO_WINDOW` and hand it the launcher's std handles explicitly. With a
+console present nothing changes. Asserted by
+`test_detached_caller_gets_output_without_a_console`; against the old loader
+it fails with `got: ''`.
+
+**Not fixed: the Scoop shim.** Through `~/scoop/shims/zsh.exe` a
+`DETACHED_PROCESS` caller still gets a tab, titled with the *shim's* path, so
+the console belongs to Scoop's `shim.exe` and not to anything this repo builds.
+Output still arrives. A host that starts zsh detached should call
+`apps/zsh/current/zsh.exe` (the root copy of the loader) or `zsh-loader.exe`
+directly.
+
+---
+
+## Environment prefixes do not reach Git's `sh` from this zsh
+
+Run as `build/bin/usr/bin/zsh.exe -f`, without the launcher, PATH finds Git's
+`/usr/bin/sh` first. `VAR=x sh -c 'printf %s "$VAR"'` then prints nothing:
+measured 2026-11-03, `MSYS2_ROOT` and `ZSH_SKIP_MSYS2_UPGRADE` both arrived
+empty across the boundary from this runtime to Git's.
+
+It cost a real `pacman -Syu`. A test passed `ZSH_SKIP_MSYS2_UPGRADE=1` and a
+bogus `MSYS2_ROOT` precisely so that `compile.sh` could not upgrade anything.
+Neither arrived, `compile.sh` fell back to the default root, and it upgraded
+MSYS2. That time nothing needed upgrading, so no process was killed. The test
+now checks that the variables arrive before it runs `compile.sh`, and skips
+otherwise. Through the launcher, `sh` is this runtime's own and the variables
+arrive.
+
+Same family as the `cygpath` and `/c/...` entries above: two MSYS runtimes do
+not agree on what crosses between them, and nothing reports the loss.
