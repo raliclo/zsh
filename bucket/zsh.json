@@ -1,12 +1,12 @@
 {
-    "version": "5.9.999.3-test.20261103v1.d6ee5af92",
+    "version": "5.9.999.3-test.20261104v1.399ecfdb4",
     "description": "Zsh shell built from source with the MSYS2 toolchain (portable runtime)",
     "homepage": "https://www.zsh.org",
     "license": "Zsh (MIT-like)",
     "architecture": {
         "64bit": {
             "url": "https://github.com/raliclo/zsh/releases/download/zsh-portable/zsh.tar.zst",
-            "hash": "bd67675adc676d0d2a1b1c3341a73b803ea43a45bdadd9af79c14217d6ee8b45"
+            "hash": "0fd0cf8e84de1871feab53f6f6d175ea952abc382ec4209af681d1d1b58362c0"
         }
     },
     "bin": [
@@ -15,5 +15,8 @@
             "zsh"
         ]
     ],
-    "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release zsh-portable at https://github.com/raliclo/zsh. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched."
+    "post_install": [
+        "Copy-Item -LiteralPath \"$dir\\zsh-loader.exe\" -Destination \"$(shimdir $global)\\zsh.exe\" -Force"
+    ],
+    "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release zsh-portable at https://github.com/raliclo/zsh. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched. post_install then replaces shims\\zsh.exe with zsh-loader.exe itself, which finds the install through zsh.shim: Scoop's generic shim.exe made Windows open a console window for every call from a caller with no console."
 }
