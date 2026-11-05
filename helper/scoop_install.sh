@@ -75,7 +75,9 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-REPO=$(cd "$(dirname "$0")/.." && pwd)
+# pwd -P: a caller can hand down a Windows-form PWD (C:\Users\...), and
+# then Git Bash's logical pwd answers C:\Users/... after a relative cd.
+REPO=$(cd "$(dirname "$0")/.." && pwd -P)
 BUILD="$REPO/build"
 BUCKET="$REPO/bucket"
 
@@ -332,7 +334,10 @@ rm -f "$ARCHIVE"
     -C "$REPO_WIN/build/bin" .
 [ -f "$ARCHIVE" ] || { echo "error: archive creation failed" >&2; exit 1; }
 
-HASH=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+# Hash from stdin: given a file name containing a backslash, GNU sha256sum
+# escapes its output line and prefixes the hash with "\" (2026-11-06, a
+# REPO of C:\Users/... wrote "\367c4b..." into the manifest).
+HASH=$(sha256sum < "$ARCHIVE" | awk '{print $1}')
 [ -n "$HASH" ] || { echo "error: could not hash archive" >&2; exit 1; }
 echo "==> sha256: $HASH"
 

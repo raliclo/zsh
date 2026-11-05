@@ -88,7 +88,9 @@ fi
 : ${commit:=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null)}
 
 archive_name=${archive:t}
-want_sha=$(sha256sum "$archive" | awk '{print $1}')
+# From stdin: a backslash in the file name makes sha256sum prefix the
+# hash with "\" (see scoop_install.sh).
+want_sha=$(sha256sum < "$archive" | awk '{print $1}')
 
 printf '==> Publishing %s\n' "$archive_name"
 printf '    repo    : %s\n' "$repo"
@@ -145,7 +147,7 @@ if ! curl -fsSL --max-time 600 "$url" -o "$tmp/dl"; then
     printf 'error: could not download %s back for verification\n' "$url" >&2
     exit 1
 fi
-got_sha=$(sha256sum "$tmp/dl" | awk '{print $1}')
+got_sha=$(sha256sum < "$tmp/dl" | awk '{print $1}')
 if [[ $got_sha != $want_sha ]]; then
     printf 'error: the published asset does not match what was uploaded.\n' >&2
     printf '       local  %s\n       remote %s\n' "$want_sha" "$got_sha" >&2
