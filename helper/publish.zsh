@@ -143,14 +143,35 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT INT TERM HUP
 url="https://github.com/$repo/releases/download/$tag/$archive_name"
-if ! curl -fsSL --max-time 600 "$url" -o "$tmp/dl"; then
-    printf 'error: could not download %s back for verification\n' "$url" >&2
-    exit 1
-fi
-got_sha=$(sha256sum < "$tmp/dl" | awk '{print $1}')
+# Retried, because right after a --clobber upload the download URL can
+# still serve the previous asset for a while. Measured 2026-11-06: the
+# read-back got the old file's sha while the release API already listed
+# the new digest, and a download minutes later matched. Waiting rather
+# than cache-busting the URL, since scoop downloads it without one.
+# Retries stop once 3 minutes have passed since the first download began.
+retry_secs=180 delay=20 n=0 got_sha=
+start=$SECONDS
+while true; do
+    (( ++n ))
+    if ! curl -fsSL --max-time 600 "$url" -o "$tmp/dl"; then
+        printf 'error: could not download %s back for verification\n' "$url" >&2
+        exit 1
+    fi
+    got_sha=$(sha256sum < "$tmp/dl" | awk '{print $1}')
+    [[ $got_sha == $want_sha ]] && break
+    (( SECONDS - start + delay < retry_secs )) || break
+    printf '    attempt %d: download still serves %.12s..., retrying in %ds\n' \
+        "$n" "$got_sha" "$delay"
+    sleep "$delay"
+done
 if [[ $got_sha != $want_sha ]]; then
+    api_sha=$(gh release view "$tag" --repo "$repo" --json assets \
+        --jq ".assets[] | select(.name == \"$archive_name\") | .digest" 2>/dev/null)
     printf 'error: the published asset does not match what was uploaded.\n' >&2
-    printf '       local  %s\n       remote %s\n' "$want_sha" "$got_sha" >&2
+    printf '       local  %s\n       remote %s\n       api    %s\n' \
+        "$want_sha" "$got_sha" "${api_sha:-<unknown>}" >&2
+    printf '       If api shows the local sha, the upload is right and the\n' >&2
+    printf '       download is still stale; re-check later before installing.\n' >&2
     exit 1
 fi
 
