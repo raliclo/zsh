@@ -1,3 +1,10 @@
+## Quick Installation
+After installation of scoop, install zsh as following.
+```
+scoop bucket add raliclo https://github.com/raliclo/zsh.git
+scoop install zsh
+```
+
 # Building zsh on Windows
 
 zsh is a POSIX shell and cannot be built with MSVC alone; it needs the MSYS2
