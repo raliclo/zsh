@@ -77,6 +77,9 @@ it. That layer names the file.
 - `$?` after `cmd | tail` is `tail`'s, so a failed build reads as 0.
   `pipefail` alone does not cover it: a command substitution in a `for` list
   drops its status entirely.
+- `${t//'a/b'/x}` — quotes do not stop a `/` from ending the pattern, so
+  nothing is replaced and nothing errors. And inside `"${…}"` the replacement's
+  single quotes are written into the result. `"${t//"$old"/$new}"` avoids both.
 
 **[bugs-build.md](bugs-build.md)**
 

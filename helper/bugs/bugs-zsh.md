@@ -269,3 +269,37 @@ place where nothing can.
   `{1..N}`. Assign first, check, then loop: `rows=$(csv2 …) || die …`.
 - A check that can pass with zero items must say how many it checked, so
   "checked 0" cannot be read as "all fine".
+
+---
+
+## `${t//'a/b'/x}` — quotes do not protect a `/` in the pattern
+
+The pattern of `${name/pattern/repl}` ends at the first `/`, and zsh finds that
+`/` before it looks at quotes. Single-quoting a path in the pattern does not
+help: the pattern is cut at the slash inside the quotes, nothing matches, and
+the text comes back unchanged — no error. Reported by a peer session on
+2026-11-07, while doing literal renames across a tree's documents.
+
+Measured 2026-11-07 with `t='see FW/README.md and 舊名 here'`; this port and
+WSL's Linux zsh 5.9 printed the same, line for line, under `zsh -f`:
+
+| form | result |
+|---|---|
+| 1. `"${t//'FW/README.md'/'FW/doc.md'}"` | unchanged — the silent one |
+| 2. `"${t//FW\/README.md/FW/doc.md}"` | `see FW/doc.md …` |
+| 3. `old=FW/README.md new=FW/doc.md; "${t//"$old"/$new}"` | `see FW/doc.md …` |
+| 4. as 3, but `${t//$old/$new}` | same — a parameter in the pattern is literal unless `${~old}` |
+| 5. `"${t//舊名/a/b}"` | `… a/b here` — a `/` in the *replacement* is plain text |
+| 6. `"${t//'舊名'/'新名'}"` | `… '新名' here` — **the quotes land in the result** |
+| 7. `r=${t//'舊名'/'新名'}` (no outer `"…"`) | `… 新名 here` |
+
+Form 6 is the second trap, and quieter than the first: the replacement
+"succeeds", so nothing looks wrong. Inside an outer `"${…}"` the replacement is
+in double-quote context, where single quotes are ordinary characters. A bulk
+rename written that way writes `'新名'`, quotes included, into every file it
+touches.
+
+**The fix:** put the strings in parameters and write `"${t//"$old"/$new}"`
+(form 3). That handles a `/` in the old string, and a quote in either string,
+in one move. Escaping with `\/` (form 2) works too, but must be redone for each
+literal.
