@@ -415,7 +415,14 @@ _msys_build_script="
     done
 
     echo '==> Running make (second pass, with libzsh linking patched in)...'
-    make -j\$(nproc)
+    # Serial on purpose. Upstream 55157 + 55197 (2026-09) dropped
+    # .NOTPARALLEL, so -j became real, and this pass is mostly linking.
+    # Measured 2026-11-25: with -j, libzsh was relinked twice while
+    # Src/Zle and Src/Modules each linked zle.so, and zle.so linked against
+    # a half-written libzsh -- undefined ztrdup, quietgethist, ... The
+    # commit itself says make -j1 avoids such issues. The first pass,
+    # where the compiling happens, stays parallel.
+    make -j1
 
     # --- Assemble a portable runtime in build/bin ---------------------------
     # zsh.exe (the real interpreter) + libzsh + loadable modules + the

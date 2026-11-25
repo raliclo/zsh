@@ -71,3 +71,34 @@ first symptom was `fatal: sha1 file '.git/index.lock' write error`, which reads
 as a git problem; the cause was on the same line, further along —
 `Out of diskspace`. The build that "took more than nine minutes" took 266
 seconds once there was room.
+
+---
+
+## `make -j` became real in 2026-09, and the module link pass races
+
+Until upstream 55157 + 55197 ("allow parallel make", 2026-09-08) zsh's
+makefiles declared `.NOTPARALLEL`, so the `make -j$(nproc)` in `compile.sh`
+quietly ran serially. That commit removed the declaration. The first build after
+rebasing onto it (2026-11-25) failed in the second make pass:
+
+```
+ld: zle_hist..o:zle_hist.c:(.text+0xb): undefined reference to `quietgethist'
+ld: zle_hist..o:zle_hist.c:(.text+0x36): undefined reference to `ztrdup'
+```
+
+`zle.so`'s link line did name `libzsh`. The log showed why that was not
+enough: in the second pass `libzsh` was linked twice, `Src/Zle` and
+`Src/Modules` both linked `zle.so`, and `cat: 'stamp-modobjs.tmp-*': No such
+file or directory` showed the stamp files being removed and rebuilt at the same
+moment. So `zle.so` linked against a `libzsh` that was still being written.
+
+Two false leads worth recording:
+- `rlimits..o` with two dots looks like an empty variable. It is zsh's normal
+  name for a dynamic-module object.
+- The `rlimits.so` undefined references sit in the *first* pass, which is
+  expected to fail (see the comment above it in `compile.sh`). The failure
+  that counts is the one after `Running make (second pass`.
+
+**Fix:** the second pass is `make -j1`. That pass is mostly linking. The first
+pass, where the compiling happens, stays parallel. The commit itself says "If
+there's any issues, make -j1 should avoid them".

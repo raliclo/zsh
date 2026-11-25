@@ -59,6 +59,9 @@ it. That layer names the file.
   fixed by a build patch to `main()`.
 - `VAR=x sh ...` from this zsh loses `VAR` when `sh` is Git's. A test's
   "skip the upgrade" guard vanished that way and ran a real `pacman -Syu`.
+- A fresh MSYS2 tree (every scoop update) has no pacman keyring, and `-Syu`
+  says "keyring is not writable". MSYS2's own first-start step never runs
+  because the inherited `HOME` already exists.
 
 **[bugs-zsh.md](bugs-zsh.md)**
 
@@ -85,6 +88,8 @@ it. That layer names the file.
 
 - "Sources newer than the binary" is normal here, for exactly four files.
 - An interrupted build leaves patched sources and live children.
+- Upstream made `make -j` real in 2026-09; the parallel module link pass
+  linked `zle.so` against a half-written `libzsh`. The second pass is now `-j1`.
 
 ## The pattern worth carrying away
 

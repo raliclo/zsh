@@ -1359,6 +1359,28 @@ test_build_and_release_report_what_happened() {
         fail_test $name "the generated script does not stop on a failed -Syu"
     fi
 
+    # 1b. 2026-11-25: a fresh scoop msys2 tree had no keyring, and MSYS2's
+    #     own first-start step never ran because HOME already existed.
+    name="msys2_upgrade.sh creates a missing keyring before -Syu"
+    local keyring syu
+    keyring=$(grep -n 'if \[ ! -d /etc/pacman.d/gnupg \]' $helper/msys2_upgrade.sh | head -1 | cut -d: -f1)
+    syu=$(grep -n 'pacman --noconfirm -Syu || exit' $helper/msys2_upgrade.sh | head -1 | cut -d: -f1)
+    if [[ -n $keyring && -n $syu ]] && (( keyring < syu )) &&
+       grep -qF 'pacman-key --populate msys2 || exit' $helper/msys2_upgrade.sh; then
+        pass_test $name
+    else
+        fail_test $name "no keyring check ahead of -Syu (keyring=$keyring syu=$syu)"
+    fi
+
+    # 1c. 2026-11-25: once upstream allowed parallel make, the -j second
+    #     pass linked zle.so against a libzsh being relinked at the same time.
+    name="compile.sh links modules in a serial second make pass"
+    if grep -A9 'Running make (second pass' $helper/compile.sh | grep -q '^    make -j1$'; then
+        pass_test $name
+    else
+        fail_test $name "the second make pass is not make -j1"
+    fi
+
     # 2. --upload-release fell through to stop/uninstall/install.
     name="scoop_install.sh --upload-release stops before installing"
     local guard install

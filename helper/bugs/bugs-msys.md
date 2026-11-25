@@ -389,3 +389,31 @@ arrive.
 
 Same family as the `cygpath` and `/c/...` entries above: two MSYS runtimes do
 not agree on what crosses between them, and nothing reports the loss.
+
+---
+
+## A fresh MSYS2 tree has no pacman keyring, and the error says "not writable"
+
+Measured 2026-11-25. Scoop updated msys2 from `2026-09-27` to `2026-11-20` on
+11-24, and the next build stopped at the upgrade, on every repo:
+
+```
+warning: Public keyring not found; have you run 'pacman-key --init'?
+error: msys: key "5F944B027F7FE2091985AA2EFA11531AA0AA7F57" is unknown
+error: keyring is not writable
+```
+
+"Not writable" points at permissions, and that is the wrong lead. The keyring
+did not exist: the old tree had `etc/pacman.d/gnupg`, the new one did not.
+Every scoop update of msys2 is a fresh tree like this.
+
+MSYS2 does create the keyring by itself, in
+`/etc/post-install/07-pacman-key.post`. But `/etc/profile` runs the
+post-install steps only when it believes this is a first start, and its test
+is `[ ! -d "${HOME}" ]`. `msys2_upgrade.sh` starts MSYS2's bash through cmd, so
+bash inherits the Windows user's `HOME`, which of course exists. The first-start
+step never ran, so nothing ever created the keyring.
+
+**Fix:** the generated upgrade script now repeats MSYS2's own check before
+`-Syu`: if `/etc/pacman.d/gnupg` is missing, run `pacman-key --init` and
+`--populate msys2`. It leaves an existing keyring alone.

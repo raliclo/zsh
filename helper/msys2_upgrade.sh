@@ -137,9 +137,24 @@ mkdir -p "$MSYS2_ROOT/tmp"
 # upgrade (mirror 503s, a signature error) reported 0 and the build went on
 # against a half-upgraded tree. Found by review 2026-10-29; reproduced with a
 # pacman stub whose -Syu fails: rc 0 before, rc 1 after.
+#
+# The keyring step copies MSYS2's own first-start check
+# (/etc/post-install/07-pacman-key.post), because that check never fires
+# here. /etc/profile only runs it when \$HOME does not exist yet, and this
+# bash inherits the Windows user's HOME, which does. So a fresh MSYS2 tree
+# -- every scoop update of msys2 is one -- had no /etc/pacman.d/gnupg, and
+# -Syu failed on every repo with "key ... is unknown" and "keyring is not
+# writable", which reads like a permissions problem. Measured 2026-11-25
+# after scoop moved msys2 from 2026-09-27 to 2026-11-20.
 write_upgrade_script() {
     cat > "$1" <<EOF_UPGRADE
 export PATH=/usr/bin:/clang64/bin:\$PATH
+if [ ! -d /etc/pacman.d/gnupg ]; then
+    echo "==> No pacman keyring in this MSYS2 tree; creating one"
+    pacman-key --init || exit \$?
+    pacman-key --populate msys2 || exit \$?
+    gpgconf --kill all
+fi
 pacman --noconfirm -Syu || exit \$?
 $2
 EOF_UPGRADE
