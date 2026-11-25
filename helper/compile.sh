@@ -941,7 +941,12 @@ if [[ -n ${ZSH_ORIG_ZDOTDIR:-} ]]; then
   zsh_portable_fix_locale
   unset zsh_portable_user_zdotdir
 fi
-unset zsh_portable_dir zsh_portable_dir_win
+# A mixed-platform tools directory can contain an ELF rg beside rg.exe.
+# MSYS execve may try that bare file even when zsh's lookup rejects it.
+if ! whence -p rg >/dev/null && zsh_portable_rg=$(whence -p rg.exe); then
+  hash rg="$zsh_portable_rg"
+fi
+unset zsh_portable_rg zsh_portable_dir zsh_portable_dir_win
 EOF_ZSHENV
 
 cp "$REPO/helper/zshrc.sh" "$BUILD/bin/zshrc.sh"

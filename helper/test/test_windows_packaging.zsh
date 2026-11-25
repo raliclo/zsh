@@ -95,6 +95,18 @@ test_multiline_c() {
     fi
 }
 
+test_rg_resolves_windows_exe() (
+    local fixture out
+    fixture=$(mktemp -d "$BINDIR/.rg-path-test.XXXXXX") || return 1
+    trap 'rm -- "$fixture/rg" "$fixture/rg.exe" 2>/dev/null; rmdir -- "$fixture"' EXIT
+    # Reproduce the mixed-platform directory without depending on Codex.
+    printf '\177ELF\002\001\001\000' > "$fixture/rg" || return 1
+    cp /c/Windows/System32/hostname.exe "$fixture/rg.exe" || return 1
+    out=$(PATH="$fixture:$PATH" ZDOTDIR="$fixture" "$LAUNCHER" -c '
+        [[ $(whence -p rg) == $(whence -p rg.exe) ]] && command rg' 2>&1)
+    [[ $? == 0 && -n $out ]]
+)
+
 # --- users may bypass the Scoop shim and call apps/zsh/current/zsh.exe
 # directly. That public root executable must be the native launcher too,
 # otherwise PowerShell/MSYS argv boundaries can leak '|' from quoted regexes
@@ -1529,6 +1541,11 @@ test_scoop_install_uses_github_release_assets() {
 
 test_multiline_c
 test_public_zsh_exe_preserves_pipe_regex
+if test_rg_resolves_windows_exe; then
+    pass_test "bare rg resolves to rg.exe beside an ELF file"
+else
+    fail_test "bare rg resolves to rg.exe beside an ELF file" "Windows rg.exe was not launched"
+fi
 test_nested_perl_dollars_survive_with_shell_quoting
 test_arithmetic_increment_is_err_exit_safe
 test_pipe_in_quotes
