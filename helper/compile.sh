@@ -135,6 +135,15 @@ if [ ! -x "$MSYS2_BASH" ]; then
     exit 1
 fi
 
+# Pin the MSYS environment. MSYS2's login bash takes its environment from
+# an inherited MSYSTEM, and Git Bash exports MSYSTEM=MINGW64. Started from
+# Git Bash on 2026-11-25, configure saw uname -s = MINGW64_NT, config.site
+# set build_alias from MSYSTEM_CHOST, and the zsh built reported
+# OSTYPE=mingw32 instead of cygwin. Nothing failed; only scripts that test
+# $OSTYPE would notice. Started from PowerShell (no MSYSTEM) it was cygwin.
+MSYSTEM=MSYS
+export MSYSTEM
+
 # The caller may be PowerShell -> Scoop sh.exe -> this script, with Scoop
 # shims ahead of MSYS2 in PATH. Force MSYS2's real POSIX tools to win before
 # the first mkdir/sed/grep call; stale BusyBox shims can otherwise break the

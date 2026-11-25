@@ -95,6 +95,19 @@ test_multiline_c() {
     fi
 }
 
+# --- 2026-11-25: built from Git Bash, the inherited MSYSTEM=MINGW64 made
+# configure target mingw32, and the build reported OSTYPE=mingw32. Scripts
+# that branch on $OSTYPE == cygwin* would quietly take the other path.
+test_ostype_is_cygwin() {
+    local out
+    out=$("$LAUNCHER" -c 'printf "%s" "$OSTYPE"' 2>&1)
+    if [[ $out == cygwin* ]]; then
+        pass_test "OSTYPE is cygwin, whatever shell started the build"
+    else
+        fail_test "OSTYPE is cygwin, whatever shell started the build" "got: ${(qq)out}"
+    fi
+}
+
 test_rg_resolves_windows_exe() (
     local fixture out
     fixture=$(mktemp -d "$BINDIR/.rg-path-test.XXXXXX") || return 1
@@ -1562,6 +1575,7 @@ test_scoop_install_uses_github_release_assets() {
 }
 
 test_multiline_c
+test_ostype_is_cygwin
 test_public_zsh_exe_preserves_pipe_regex
 if test_rg_resolves_windows_exe; then
     pass_test "bare rg resolves to rg.exe beside an ELF file"
