@@ -457,7 +457,19 @@ _msys_build_script="
     cat > bin/etc/fstab <<'EOF_FSTAB'
 # Use MSYS2 short drive mounts such as /c/Users in the portable runtime.
 none / cygdrive binary,posix=0,noacl,user 0 0
+# Mount /tmp on the process TEMP directory (which zsh-loader.exe and zsh.cmd
+# point at %TEMP%\zsh\tmp) so temp files never land in the versioned app dir.
+none /tmp usertemp binary,posix=0,noacl 0 0
 EOF_FSTAB
+    cat > bin/etc/nsswitch.conf <<'EOF_NSSWITCH'
+# Resolve user home directories from HOME / Windows %USERPROFILE% rather than
+# a nonexistent /home/<user> inside the versioned portable zsh directory
+# (which broke OpenSSH known_hosts / key lookup under git submodule sync).
+passwd: db
+group: db
+db_home: env windows cygwin desc
+db_shell: /usr/bin/zsh
+EOF_NSSWITCH
     cp Src/zsh.exe bin/zsh.exe
     cp Src/libzsh-*.\$DL_EXT bin/
 
@@ -692,6 +704,20 @@ rem ZDOTDIR against ZSH_PORTABLE_DIR and must agree regardless of which
 rem entry point set them.
 if "%ZSH_PORTABLE_DIR:~-1%"=="\" set "ZSH_PORTABLE_DIR=%ZSH_PORTABLE_DIR:~0,-1%"
 set "ZSH_WIN_HOME=%USERPROFILE%"
+if not defined HOME if defined USERPROFILE set "HOME=%USERPROFILE%"
+set "_ZSH_BASE_TEMP=%TEMP%"
+if not defined _ZSH_BASE_TEMP set "_ZSH_BASE_TEMP=%TMP%"
+if not defined _ZSH_BASE_TEMP if defined LOCALAPPDATA if exist "%LOCALAPPDATA%\Temp" set "_ZSH_BASE_TEMP=%LOCALAPPDATA%\Temp"
+if defined _ZSH_BASE_TEMP (
+    if "!_ZSH_BASE_TEMP:~-1!"=="\" set "_ZSH_BASE_TEMP=!_ZSH_BASE_TEMP:~0,-1!"
+    if /I not "!_ZSH_BASE_TEMP:~-8!"=="\zsh\tmp" set "_ZSH_BASE_TEMP=!_ZSH_BASE_TEMP!\zsh\tmp"
+    if not exist "!_ZSH_BASE_TEMP!" mkdir "!_ZSH_BASE_TEMP!" 2>nul
+    if exist "!_ZSH_BASE_TEMP!" (
+        set "TEMP=!_ZSH_BASE_TEMP!"
+        set "TMP=!_ZSH_BASE_TEMP!"
+    )
+)
+set "_ZSH_BASE_TEMP="
 set "ZSH_TERMINFO_DIR=%ZSH_PORTABLE_DIR:\=/%/share/terminfo"
 set "ZSH_TERMINFO_DRIVE=%ZSH_TERMINFO_DIR:~0,1%"
 set "ZSH_TERMINFO_PATH=%ZSH_TERMINFO_DIR:~2%"

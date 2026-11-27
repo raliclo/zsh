@@ -186,6 +186,34 @@ stop_zsh_processes() {
     sleep 1
 }
 
+# Remove Windows reserved device-name entries (nul, con, prn, aux, com1-9,
+# lpt1-9) under <zsh-app-dir>/*/tmp if any exist. MSYS2/Cygwin can create such
+# files via NT APIs, which later block Scoop's Win32 deletion during uninstall
+# or cleanup. Only touches paths when a reserved name is actually detected.
+clean_reserved_tmp_files() {
+    _crt_dir=$1
+    [ -n "$_crt_dir" ] && [ -d "$_crt_dir" ] || return 0
+    command -v powershell.exe >/dev/null 2>&1 || return 0
+    _crt_win=$(to_windows_path "$_crt_dir" 2>/dev/null) || _crt_win=$_crt_dir
+    _crt_win=$(printf '%s' "$_crt_win" | tr '/' '\\')
+    powershell.exe -NoProfile -Command '
+        $root = $args[0]
+        $re = "^(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$"
+        Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $t = Join-Path $_.FullName "tmp"
+            if (-not (Test-Path -LiteralPath $t)) { return }
+            $hits = @([System.IO.Directory]::EnumerateFileSystemEntries("\\?\$t", "*", [System.IO.SearchOption]::AllDirectories) |
+                Where-Object { [System.IO.Path]::GetFileName($_) -match $re } |
+                Sort-Object Length -Descending)
+            foreach ($p in $hits) {
+                Write-Host "==> Removing Windows reserved-name entry: $p"
+                if ([System.IO.Directory]::Exists($p)) { [System.IO.Directory]::Delete($p, $true) }
+                elseif ([System.IO.File]::Exists($p)) { [System.IO.File]::Delete($p) }
+            }
+        }
+    ' "$_crt_win" || true
+}
+
 run_shim_version() {
     shim=$1
 
@@ -370,6 +398,9 @@ cat > "$BUCKET/zsh.json" <<EOF
     "post_install": [
         "Copy-Item -LiteralPath \"\$dir\\\\zsh-loader.exe\" -Destination \"\$(shimdir \$global)\\\\zsh.exe\" -Force"
     ],
+    "pre_uninstall": [
+        "\$t = Join-Path \$dir 'tmp'; if (Test-Path -LiteralPath \$t) { \$re = '^(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(\\\\..*)?\$'; [System.IO.Directory]::EnumerateFileSystemEntries(\"\\\\\\\\?\\\\\$t\", '*', [System.IO.SearchOption]::AllDirectories) | Where-Object { [System.IO.Path]::GetFileName(\$_) -match \$re } | Sort-Object Length -Descending | ForEach-Object { Write-Host \"Removing Windows reserved-name entry: \$_\"; if ([System.IO.Directory]::Exists(\$_)) { [System.IO.Directory]::Delete(\$_, \$true) } elseif ([System.IO.File]::Exists(\$_)) { [System.IO.File]::Delete(\$_) } } }"
+    ],
     "notes": "zsh built from source with MSYS2; zip served from the stable GitHub Release $RELEASE_TAG at $ORIGIN. The 'zsh' shim points at zsh-loader.exe (a native launcher), not zsh.cmd: scoop shims for a .cmd target still have to go through cmd.exe's own parser, which can truncate a multi-line -c script at the first newline and mangle characters like | inside quoted arguments. zsh-loader.exe forwards argv to the real interpreter (zsh.exe) untouched. post_install then replaces shims\\\\zsh.exe with zsh-loader.exe itself, which finds the install through zsh.shim: Scoop's generic shim.exe made Windows open a console window for every call from a caller with no console."
 }
 EOF
@@ -433,6 +464,7 @@ fi
 # --- 3. Install through scoop ------------------------------------------------
 ZSH_APP_DIR="$SCOOP_HOME/apps/zsh"
 stop_zsh_processes "$ZSH_APP_DIR"
+clean_reserved_tmp_files "$ZSH_APP_DIR"
 if scoop list zsh 2>/dev/null | grep -q '^zsh '; then
     echo "==> Removing previously installed zsh..."
     scoop uninstall zsh

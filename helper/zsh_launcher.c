@@ -394,6 +394,71 @@ static BOOL WINAPI ignore_interrupt(DWORD type) {
     return type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT;
 }
 
+/* Point TEMP/TMP at %TEMP%\zsh\tmp (creating it if needed) so MSYS2's
+ * `/tmp` usertemp mount never writes into the versioned Scoop app directory.
+ * Avoid double-nesting when already running inside a portable zsh session. */
+static void setup_portable_temp(void) {
+    wchar_t base[MAX_PATH] = L"";
+    DWORD n = GetEnvironmentVariableW(L"TEMP", base, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        n = GetEnvironmentVariableW(L"TMP", base, MAX_PATH);
+    }
+    if (n == 0 || n >= MAX_PATH) {
+        wchar_t localApp[MAX_PATH] = L"";
+        DWORD ln = GetEnvironmentVariableW(L"LOCALAPPDATA", localApp, MAX_PATH);
+        if (ln > 0 && ln + 6 < MAX_PATH) {
+            swprintf(base, MAX_PATH, L"%ls\\Temp", localApp);
+            DWORD attr = GetFileAttributesW(base);
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                n = (DWORD)wcslen(base);
+            } else {
+                base[0] = L'\0';
+                n = 0;
+            }
+        }
+    }
+    if (n == 0 || n >= MAX_PATH) {
+        n = GetTempPathW(MAX_PATH, base);
+    }
+    if (n == 0 || n >= MAX_PATH) return;
+
+    size_t len = wcslen(base);
+    while (len > 3 && (base[len - 1] == L'\\' || base[len - 1] == L'/')) {
+        base[--len] = L'\0';
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (base[i] == L'/') base[i] = L'\\';
+    }
+
+    const wchar_t *suffix = L"\\zsh\\tmp";
+    size_t slen = wcslen(suffix);
+    if (len >= slen && _wcsicmp(base + len - slen, suffix) == 0) {
+        CreateDirectoryW(base, NULL);
+        SetEnvironmentVariableW(L"TEMP", base);
+        SetEnvironmentVariableW(L"TMP", base);
+        return;
+    }
+
+    if (len + slen + 1 >= MAX_PATH) return;
+
+    wchar_t zshDir[MAX_PATH], zshTmp[MAX_PATH];
+    if (len == 3 && base[1] == L':' && base[2] == L'\\') {
+        swprintf(zshDir, MAX_PATH, L"%lszsh", base);
+        swprintf(zshTmp, MAX_PATH, L"%lszsh\\tmp", base);
+    } else {
+        swprintf(zshDir, MAX_PATH, L"%ls\\zsh", base);
+        swprintf(zshTmp, MAX_PATH, L"%ls\\zsh\\tmp", base);
+    }
+
+    CreateDirectoryW(zshDir, NULL);
+    CreateDirectoryW(zshTmp, NULL);
+    DWORD attr = GetFileAttributesW(zshTmp);
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        SetEnvironmentVariableW(L"TEMP", zshTmp);
+        SetEnvironmentVariableW(L"TMP", zshTmp);
+    }
+}
+
 /* Installed as Scoop's shim. Scoop's own shim.exe is a console program that
  * starts its target with no special flags, so a caller with no console got a
  * new console window for the loader before the loader ran -- nothing here
@@ -588,9 +653,14 @@ int main(void) {
     }
     {
         wchar_t userprofile[MAX_PATH];
-        if (GetEnvironmentVariableW(L"USERPROFILE", userprofile, MAX_PATH))
+        if (GetEnvironmentVariableW(L"USERPROFILE", userprofile, MAX_PATH)) {
             SetEnvironmentVariableW(L"ZSH_WIN_HOME", userprofile);
+            if (GetEnvironmentVariableW(L"HOME", NULL, 0) == 0) {
+                SetEnvironmentVariableW(L"HOME", userprofile);
+            }
+        }
     }
+    setup_portable_temp();
     SetEnvironmentVariableW(L"ZDOTDIR", dir);
     SetEnvironmentVariableW(L"ZSH_PORTABLE_DIR", dir);
     SetEnvironmentVariableW(L"CHERE_INVOKING", L"1");

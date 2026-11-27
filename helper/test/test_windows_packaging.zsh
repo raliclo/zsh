@@ -1574,6 +1574,62 @@ test_scoop_install_uses_github_release_assets() {
     fi
 }
 
+test_tmp_uses_user_temp_zsh_tmp() {
+    local name="/tmp maps to TEMP/zsh/tmp outside the app dir without double-nesting"
+    local out outer inner root
+    out=$("$LAUNCHER" -c '
+        r=$(cygpath -m /)
+        t1=$(cygpath -m /tmp)
+        t2=$("'"$LAUNCHER"'" -c "cygpath -m /tmp")
+        print -r -- "$r|$t1|$t2"
+    ' 2>&1 </dev/null)
+    IFS='|' read -r root outer inner <<< "$out"
+    local root_l=${(L)root%/} outer_l=${(L)outer%/} inner_l=${(L)inner%/}
+    if [[ -n $outer_l && $outer_l == */zsh/tmp && $outer_l != "$root_l"/* && $outer_l == $inner_l ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+}
+
+test_home_and_nsswitch_resolve_windows_profile() {
+    local name="nsswitch.conf and launcher HOME resolve to Windows profile even under -f"
+    local out
+    out=$(env -u HOME "$LAUNCHER" -f -c '
+        test -r /etc/nsswitch.conf || { print missing_nsswitch; exit 1 }
+        grep -q "db_home:.*windows" /etc/nsswitch.conf || { print bad_nsswitch; exit 2 }
+        u=$(id -un)
+        tilde=$(eval print -r -- "~$u")
+        h_win=$(cygpath -m "$HOME")
+        up_win=$(cygpath -m "$USERPROFILE")
+        t_win=$(cygpath -m "$tilde")
+        print -r -- "${(L)h_win}|${(L)up_win}|${(L)t_win}"
+    ' 2>&1 </dev/null)
+    local h_win up_win t_win
+    IFS='|' read -r h_win up_win t_win <<< "$out"
+    if [[ -n $up_win && $h_win == $up_win && $t_win == $up_win ]]; then
+        pass_test $name
+    else
+        fail_test $name "got: ${(qq)out}"
+    fi
+}
+
+test_scoop_pre_uninstall_cleans_reserved_tmp_files() {
+    local name="scoop_install.sh includes reserved-name tmp cleanup and pre_uninstall hook"
+    local installer=${TEST_REPO_ROOT:+$TEST_REPO_ROOT/helper/scoop_install.sh}
+    if [[ -z $installer || ! -f $installer ]]; then
+        fail_test $name "missing helper/scoop_install.sh"
+        return
+    fi
+    if grep -q '"pre_uninstall":' "$installer" &&
+       grep -q 'clean_reserved_tmp_files' "$installer" &&
+       grep -q 'EnumerateFileSystemEntries' "$installer"; then
+        pass_test $name
+    else
+        fail_test $name "missing pre_uninstall or clean_reserved_tmp_files in scoop_install.sh"
+    fi
+}
+
 test_multiline_c
 test_ostype_is_cygwin
 test_public_zsh_exe_preserves_pipe_regex
@@ -1628,6 +1684,9 @@ test_scoop_install_uses_github_release_assets
 test_scoop_install_verifies_the_install
 
 test_scoop_install_prompts_to_commit_the_manifest
+test_tmp_uses_user_temp_zsh_tmp
+test_home_and_nsswitch_resolve_windows_profile
+test_scoop_pre_uninstall_cleans_reserved_tmp_files
 
 print
 print "Results: $pass passed, $fail failed, $skip skipped"
